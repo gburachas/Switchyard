@@ -515,6 +515,11 @@ pub(crate) async fn call_model_with_fallback(
         let Ok(next) = targets.resolve_target(&target.semantic_name, excluded) else {
             return Err(error);
         };
+        observability::record_shim_retry(
+            &target.semantic_name,
+            &next.semantic_name,
+            reason.as_str(),
+        );
         decision = fallback_decision(&target, &next, reason);
         target = next;
         driver.info(decision.clone()).await?;

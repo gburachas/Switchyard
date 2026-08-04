@@ -17,8 +17,11 @@ use super::util::DEFAULT_JUDGE_MAX_OUTPUT_TOKENS;
 use super::util::affinity::AffinityRouter;
 use super::util::classifier_contract::{ClassifierContract, ClassifierContractConfig};
 use super::util::escalation::{self, EscalationJudge, EscalationJudgeConfig, EscalationPolicy};
+use super::util::followup::{
+    self, AbstainSelectorPolicy, FollowupClassifier, FollowupConfig, FollowupInput, decisive,
+};
 use super::util::llm_judge::{
-    ClassifierInput, JsonSchemaDecoder, JudgeClassifier, JudgePolicy, JudgeRuntimeConfig,
+    ClassifierInput, JsonSchemaDecoder, Judge, JudgeClassifier, JudgePolicy, JudgeRuntimeConfig,
     SerdeDecoder, StructuredJudge,
 };
 use super::util::target_selector::TargetSelectorPolicy;
@@ -273,6 +276,8 @@ pub struct TaskClassifierConfig {
     /// as it does for any other judge failure. `None` (the default) leaves it
     /// unbounded, preserving existing behaviour.
     pub judge_deadline_ms: Option<u64>,
+    /// Re-classifies on fresh user turns and pins the tier in between, when set.
+    pub followup: Option<FollowupConfig>,
 }
 
 /// Flat serialized shape that maps prompt settings into the runtime contract.
@@ -294,6 +299,7 @@ struct TaskClassifierConfigWire {
     max_output_tokens: u64,
     #[serde(default)]
     judge_deadline_ms: Option<u64>,
+    followup: Option<FollowupConfig>,
 }
 
 impl<'de> Deserialize<'de> for TaskClassifierConfig {
@@ -315,6 +321,7 @@ impl<'de> Deserialize<'de> for TaskClassifierConfig {
             contract,
             max_output_tokens: wire.max_output_tokens,
             judge_deadline_ms: wire.judge_deadline_ms,
+            followup: wire.followup,
         })
     }
 }
@@ -334,6 +341,7 @@ impl Default for TaskClassifierConfig {
             contract: ClassifierContractConfig::default(),
             max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
             judge_deadline_ms: None,
+            followup: None,
         }
     }
 }
@@ -472,6 +480,8 @@ pub struct CustomClassifierConfig {
     pub recent_turn_window: Option<usize>,
     /// Maximum completion tokens available to the classifier verdict.
     pub max_output_tokens: u64,
+    /// Re-classifies on fresh user turns and pins the target in between, when set.
+    pub followup: Option<FollowupConfig>,
 }
 
 impl CustomClassifierConfig {
@@ -489,6 +499,7 @@ impl CustomClassifierConfig {
             message_hash_fallback: false,
             recent_turn_window: None,
             max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+            followup: None,
         }
     }
 
@@ -521,8 +532,13 @@ impl JudgePolicy for CustomPolicyRuntime {
     }
 }
 
-struct TaskClassifier {
-    classifier: JudgeClassifier<CapabilityJudge, TaskClassifierPolicy>,
+/// Routes a capability verdict between the efficient and capable tiers.
+///
+/// Generic over the judge and policy so follow-up routing can substitute its own pair —
+/// an input that also shows the incumbent tier, and a policy that honours an explicit
+/// abstain — without a second copy of this delegation.
+struct TaskClassifier<J = CapabilityJudge, P = TaskClassifierPolicy> {
+    classifier: JudgeClassifier<J, P>,
     efficient_target: String,
     capable_target: String,
 }
@@ -537,13 +553,6 @@ fn streak(state: &State) -> u32 {
         Some(StateValue::Count(n)) => *n,
         _ => 0,
     }
-}
-
-fn decisive(target: &str) -> Classification {
-    Classification::Scores(vec![Score {
-        target: target.to_string(),
-        confidence: 1.0,
-    }])
 }
 
 fn assistant_message(response: &AggLlmResponse) -> Message {
@@ -682,6 +691,15 @@ struct ClassifierRouteConfig {
     default_target: String,
     session_affinity: bool,
     message_hash_fallback: bool,
+    /// Follow-up pinning, when the route configures it.
+    followup: Option<FollowupRouting>,
+}
+
+/// Follow-up settings once the mode has resolved its fail-open target.
+struct FollowupRouting {
+    refresh: followup::RefreshPolicy,
+    /// Target served when the judge produces nothing usable and nothing is pinned.
+    fail_open: String,
 }
 
 /// Complete construction settings for one LLM classifier mode.
@@ -776,35 +794,67 @@ impl LlmTaskClassifier {
         let targets = LlmTargetSet::new(vec![efficient_target.clone(), capable_target.clone()]);
         let session_affinity = config.session_affinity;
         let message_hash_fallback = config.message_hash_fallback;
-        let classifier = Arc::new(TaskClassifier {
-            classifier: JudgeClassifier::new(
-                StructuredJudge::new(
-                    TaskInput {
-                        recent_turn_window: config.recent_turn_window,
-                    },
-                    contract,
-                    SerdeDecoder::new(),
-                    JudgeRuntimeConfig::new(config.max_output_tokens)?
-                        .with_deadline(config.judge_deadline_ms.map(Duration::from_millis))?,
-                ),
-                judge_target.clone(),
-                TaskClassifierPolicy::new(
-                    efficient_target.semantic_name.clone(),
-                    capable_target.semantic_name.clone(),
-                    &config,
-                ),
-            ),
-            efficient_target: efficient_target.semantic_name.clone(),
-            capable_target: capable_target.semantic_name.clone(),
-        });
-        let inner: Arc<dyn Classifier<State>> = classifier.clone();
+        let efficient = efficient_target.semantic_name.clone();
+        let capable = capable_target.semantic_name.clone();
+        let policy = TaskClassifierPolicy::new(efficient.clone(), capable.clone(), &config);
+        let input = TaskInput {
+            recent_turn_window: config.recent_turn_window,
+        };
+        let runtime = JudgeRuntimeConfig::new(config.max_output_tokens)?
+            .with_deadline(config.judge_deadline_ms.map(Duration::from_millis))?;
+
+        // Follow-up substitutes only the judge input, so the incumbent tier reaches the
+        // prompt. Everything else — contract, decoder, policy, thresholds — is the stock
+        // capability classifier: its rubric has no abstain of its own, so a verdict is
+        // either usable or it is not, and an unusable one holds the pin.
+        let (inner, followup): (Arc<dyn Classifier<State>>, _) = match config.followup {
+            Some(followup) => {
+                followup.validate_capability()?;
+                let fail_open =
+                    followup.fail_open_target(&capable, Some(&efficient), Some(&capable));
+                let classifier = Arc::new(TaskClassifier {
+                    classifier: JudgeClassifier::new(
+                        StructuredJudge::new(
+                            FollowupInput { inner: input },
+                            contract,
+                            SerdeDecoder::new(),
+                            runtime,
+                        ),
+                        judge_target,
+                        policy,
+                    ),
+                    efficient_target: efficient,
+                    capable_target: capable.clone(),
+                });
+                (
+                    classifier,
+                    Some(FollowupRouting {
+                        refresh: followup.refresh,
+                        fail_open,
+                    }),
+                )
+            }
+            None => {
+                let classifier = Arc::new(TaskClassifier {
+                    classifier: JudgeClassifier::new(
+                        StructuredJudge::new(input, contract, SerdeDecoder::new(), runtime),
+                        judge_target,
+                        policy,
+                    ),
+                    efficient_target: efficient,
+                    capable_target: capable.clone(),
+                });
+                (classifier, None)
+            }
+        };
         Self::from_classifier(
             targets,
             inner,
             ClassifierRouteConfig {
-                default_target: classifier.capable_target.clone(),
+                default_target: capable,
                 session_affinity,
                 message_hash_fallback,
+                followup,
             },
         )
     }
@@ -867,6 +917,7 @@ impl LlmTaskClassifier {
             message_hash_fallback,
             recent_turn_window,
             max_output_tokens,
+            followup,
         } = config;
         let contract = ClassifierContract::from_inner_schema(&prompt, response_schema)?;
         let policy = match policy {
@@ -880,16 +931,50 @@ impl LlmTaskClassifier {
                 CustomPolicyRuntime::TargetSelector(TargetSelectorPolicy::new(selector, lookup)?)
             }
         };
-        let classifier: Arc<dyn Classifier<State>> = Arc::new(JudgeClassifier::new(
-            StructuredJudge::new(
-                TaskInput { recent_turn_window },
-                contract,
-                JsonSchemaDecoder::new(),
-                JudgeRuntimeConfig::new(max_output_tokens)?,
+        let input = TaskInput { recent_turn_window };
+        let runtime = JudgeRuntimeConfig::new(max_output_tokens)?;
+
+        // Custom mode names no tiers, so its fail-open target is the route's own
+        // `default_target`, and an explicit abstain is read through the configured pointer.
+        let (classifier, followup): (Arc<dyn Classifier<State>>, _) = match followup {
+            Some(followup) => {
+                followup.validate_custom()?;
+                let fail_open = default_semantic_name.clone();
+                let judge = StructuredJudge::new(
+                    FollowupInput { inner: input },
+                    contract,
+                    JsonSchemaDecoder::new(),
+                    runtime,
+                );
+                let classifier: Arc<dyn Classifier<State>> = match followup.abstain_pointer()? {
+                    Some(abstain) => Arc::new(JudgeClassifier::new(
+                        judge,
+                        judge_target,
+                        AbstainSelectorPolicy {
+                            inner: policy,
+                            abstain,
+                            fail_open: fail_open.clone(),
+                        },
+                    )),
+                    None => Arc::new(JudgeClassifier::new(judge, judge_target, policy)),
+                };
+                (
+                    classifier,
+                    Some(FollowupRouting {
+                        refresh: followup.refresh,
+                        fail_open,
+                    }),
+                )
+            }
+            None => (
+                Arc::new(JudgeClassifier::new(
+                    StructuredJudge::new(input, contract, JsonSchemaDecoder::new(), runtime),
+                    judge_target,
+                    policy,
+                )),
+                None,
             ),
-            judge_target,
-            policy,
-        ));
+        };
 
         Self::from_classifier(
             LlmTargetSet::new(resolved_targets),
@@ -898,6 +983,7 @@ impl LlmTaskClassifier {
                 default_target: default_semantic_name,
                 session_affinity,
                 message_hash_fallback,
+                followup,
             },
         )
     }
@@ -953,6 +1039,28 @@ impl LlmTaskClassifier {
                 message: "message_hash_fallback requires session_affinity".to_string(),
             });
         }
+        // Both pin a target to a session, but affinity's latch is first-wins and would
+        // short-circuit the judge before follow-up could ever refresh — silently turning
+        // `on_user_turn` into `pin_once`. Follow-up subsumes affinity, since
+        // `refresh = "pin_once"` is exactly what affinity provides.
+        if config.session_affinity && config.followup.is_some() {
+            return Err(LibsyError::AlgorithmError {
+                message: "followup cannot be combined with session_affinity; \
+                          use followup = { refresh = \"pin_once\" } instead"
+                    .to_string(),
+            });
+        }
+        // Follow-up owns the judge call once configured: it reuses the pin, or consults
+        // the mode's classifier and pins what comes back.
+        let inner = match config.followup {
+            Some(followup) => Arc::new(FollowupClassifier {
+                inner,
+                refresh: followup.refresh,
+                fail_open: followup.fail_open,
+                algorithm: ALGORITHM_NAME,
+            }) as Arc<dyn Classifier<State>>,
+            None => inner,
+        };
         // Affinity comes first so a retained assignment short-circuits the judge call.
         // Note: when this classifier is embedded inside another cascade (e.g. StageRouter)
         // the affinity processor never fires — only the inner score() is called.
@@ -980,7 +1088,11 @@ impl LlmTaskClassifier {
 }
 
 #[async_trait]
-impl Classifier<State> for TaskClassifier {
+impl<J, P> Classifier<State> for TaskClassifier<J, P>
+where
+    J: Judge + Send + Sync,
+    P: JudgePolicy<Verdict = J::Verdict> + Send + Sync,
+{
     fn routing_tier(&self, selected_model_id: &str) -> Option<&'static str> {
         if self.efficient_target == self.capable_target {
             None
@@ -2248,5 +2360,454 @@ mod tests {
             );
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod followup_tests {
+    use std::collections::VecDeque;
+    use std::sync::Arc;
+
+    use parking_lot::Mutex;
+    use serde_json::json;
+    use switchyard_protocol::{
+        ContentBlock, Decision, LlmClientError, LlmResponse, Message, Metadata, Request, Response,
+        Role, ToolResult, text_request, text_response,
+    };
+
+    use super::*;
+    use crate::algorithms::util::followup::{FailOpenTier, FollowupConfig, RefreshPolicy};
+    use crate::core::testing::{Serve, test_drive};
+
+    const TEST_THRESHOLD: f64 = 0.5;
+
+    /// A capability verdict body. The packaged rubric answers with a solve probability
+    /// and a capability boundary; it has no abstain of its own.
+    fn verdict_json(p_solve: f64) -> String {
+        format!(
+            r#"{{"p_solve":{p_solve},"capability_boundary":"supported","primary_rule":"SUP-1","crux":"c"}}"#
+        )
+    }
+
+    /// Scripted judge replies plus a call counter, shared across the turns of one test.
+    ///
+    /// Counting judge calls is how these tests distinguish "rode the pin" from
+    /// "re-classified": the pin is invisible in the served target when both turns
+    /// resolve to the same tier.
+    struct Judge {
+        verdicts: Mutex<VecDeque<String>>,
+        calls: Mutex<usize>,
+        reachable: bool,
+    }
+
+    impl Judge {
+        /// `verdicts` are consumed in order; the last repeats once exhausted.
+        fn new(verdicts: impl IntoIterator<Item = String>) -> Arc<Self> {
+            Arc::new(Self {
+                verdicts: Mutex::new(verdicts.into_iter().collect()),
+                calls: Mutex::new(0),
+                reachable: true,
+            })
+        }
+
+        /// A judge whose every consultation fails, to drive the unreachable path.
+        fn unreachable() -> Arc<Self> {
+            Arc::new(Self {
+                verdicts: Mutex::new(VecDeque::new()),
+                calls: Mutex::new(0),
+                reachable: false,
+            })
+        }
+
+        fn calls(&self) -> usize {
+            *self.calls.lock()
+        }
+
+        fn next_verdict(&self) -> String {
+            let mut queue = self.verdicts.lock();
+            if queue.len() > 1 {
+                queue.pop_front().unwrap_or_default()
+            } else {
+                queue.front().cloned().unwrap_or_default()
+            }
+        }
+
+        /// A `Serve` for one turn. Serves the judge target from the script and every
+        /// other target with a plain answer.
+        fn serve(self: &Arc<Self>) -> impl Serve {
+            let judge = Arc::clone(self);
+            move |decision: Decision, request: Request| {
+                let judge = Arc::clone(&judge);
+                async move {
+                    let model = decision.selected_model_id().to_string();
+                    if model != "judge" {
+                        return Ok(Response {
+                            llm_response: LlmResponse::Agg(text_response(
+                                None,
+                                format!("answer from {model}"),
+                            )),
+                            metadata: request.metadata,
+                        });
+                    }
+                    *judge.calls.lock() += 1;
+                    if !judge.reachable {
+                        return Err(LlmClientError::Timeout {
+                            source: Box::new(std::io::Error::other("judge unreachable")),
+                        });
+                    }
+                    Ok(Response {
+                        llm_response: LlmResponse::Agg(text_response(None, judge.next_verdict())),
+                        metadata: request.metadata,
+                    })
+                }
+            }
+        }
+    }
+
+    fn target(name: &str) -> LlmTarget {
+        LlmTarget {
+            semantic_name: name.to_string(),
+        }
+    }
+
+    fn capability_router(followup: FollowupConfig) -> Result<Arc<LlmTaskClassifier>> {
+        Ok(Arc::new(LlmTaskClassifier::new(
+            LlmClassifierConfig::Capability {
+                judge_target: target("judge"),
+                efficient_target: target("efficient"),
+                capable_target: target("capable"),
+                config: TaskClassifierConfig {
+                    base_threshold: TEST_THRESHOLD,
+                    followup: Some(followup),
+                    ..TaskClassifierConfig::default()
+                },
+            },
+        )?))
+    }
+
+    /// A custom-mode router over the same two tiers, selecting on `/recommended_tier`
+    /// and falling open to `strong` — the shape the converted benchmark profiles use.
+    fn custom_router(followup: FollowupConfig) -> Result<Arc<LlmTaskClassifier>> {
+        let mut config = CustomClassifierConfig::new(
+            "route this turn",
+            json!({
+                "type": "object",
+                "properties": {
+                    "recommended_tier": {"type": "string", "enum": ["weak", "strong"]},
+                    "abstain": {"type": "boolean"}
+                },
+                "required": ["recommended_tier", "abstain"],
+                "additionalProperties": false
+            }),
+            CustomClassifierPolicy::target_selector("/recommended_tier"),
+        );
+        config.followup = Some(followup);
+        Ok(Arc::new(LlmTaskClassifier::new(
+            LlmClassifierConfig::Custom {
+                judge_target: target("judge"),
+                targets: vec![
+                    ("weak".to_string(), target("weak")),
+                    ("strong".to_string(), target("strong")),
+                ],
+                default_target: "strong".to_string(),
+                config,
+            },
+        )?))
+    }
+
+    /// A session request whose trailing message is a fresh user question.
+    fn user_turn() -> Request {
+        Request {
+            llm_request: text_request(Some("auto".to_string()), "classify this task"),
+            raw_request: None,
+            metadata: Some(Metadata {
+                session_id: Some("session-followup".to_string()),
+                ..Metadata::default()
+            }),
+        }
+    }
+
+    /// The same session, but the trailing message is a tool result being fed back.
+    fn tool_turn() -> Request {
+        let mut request = user_turn();
+        request.llm_request.messages.push(Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult(ToolResult {
+                tool_call_id: "call-1".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "exit 0".to_string(),
+                }],
+                is_error: None,
+            })],
+        });
+        request
+    }
+
+    /// Runs `request` through `router` and reports the target that served it.
+    async fn served(
+        router: &Arc<LlmTaskClassifier>,
+        judge: &Arc<Judge>,
+        request: Request,
+    ) -> Result<Option<String>> {
+        let (trace, _) = test_drive(router.clone(), request, judge.serve()).await?;
+        Ok(trace.last().map(|d| d.selected_model_id().to_string()))
+    }
+
+    #[tokio::test]
+    async fn a_tool_turn_rides_the_pin_without_consulting_the_judge() -> Result<()> {
+        // p_solve above threshold routes efficient.
+        let judge = Judge::new([verdict_json(0.9)]);
+        let router = capability_router(FollowupConfig::default())?;
+
+        assert_eq!(
+            served(&router, &judge, user_turn()).await?.as_deref(),
+            Some("efficient")
+        );
+        // Three tool turns in the same session: all ride the pin.
+        for _ in 0..3 {
+            assert_eq!(
+                served(&router, &judge, tool_turn()).await?.as_deref(),
+                Some("efficient")
+            );
+        }
+        // The judge was consulted once, for the user turn only.
+        assert_eq!(judge.calls(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_fresh_user_turn_re_consults_the_judge() -> Result<()> {
+        let judge = Judge::new([verdict_json(0.9)]);
+        let router = capability_router(FollowupConfig::default())?;
+
+        served(&router, &judge, user_turn()).await?;
+        served(&router, &judge, user_turn()).await?;
+
+        assert_eq!(judge.calls(), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pin_once_never_re_consults_even_on_a_fresh_user_turn() -> Result<()> {
+        let judge = Judge::new([verdict_json(0.9)]);
+        let router = capability_router(FollowupConfig {
+            refresh: RefreshPolicy::PinOnce,
+            ..FollowupConfig::default()
+        })?;
+
+        served(&router, &judge, user_turn()).await?;
+        served(&router, &judge, user_turn()).await?;
+
+        assert_eq!(judge.calls(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_unusable_verdict_holds_the_incumbent() -> Result<()> {
+        // Asymmetry 2. Turn one pins `efficient`; turn two returns an out-of-range
+        // p_solve, which is no evidence — and no evidence is not evidence of change.
+        let judge = Judge::new([verdict_json(0.9), verdict_json(42.0)]);
+        let router = capability_router(FollowupConfig::default())?;
+
+        assert_eq!(
+            served(&router, &judge, user_turn()).await?.as_deref(),
+            Some("efficient")
+        );
+        // Held, not failed open to capable.
+        assert_eq!(
+            served(&router, &judge, user_turn()).await?.as_deref(),
+            Some("efficient")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_judge_outage_holds_the_incumbent_but_fails_open_without_one() -> Result<()> {
+        // Asymmetry 2, both halves: holding requires something to hold. On the very
+        // first turn there is no pin, so an outage must fail open rather than invent one.
+        let judge = Judge::unreachable();
+        let router = capability_router(FollowupConfig::default())?;
+
+        assert_eq!(
+            served(&router, &judge, user_turn()).await?.as_deref(),
+            Some("capable")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_fail_open_tier_is_configurable() -> Result<()> {
+        let judge = Judge::unreachable();
+        let router = capability_router(FollowupConfig {
+            fail_open_tier: Some(FailOpenTier::Efficient),
+            ..FollowupConfig::default()
+        })?;
+
+        assert_eq!(
+            served(&router, &judge, user_turn()).await?.as_deref(),
+            Some("efficient")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn concurrent_turns_in_one_session_cannot_split_the_pin() -> Result<()> {
+        // Single-flight was scoped as possible work; this is why it is not needed.
+        // `FallThrough` holds one `Arc<AsyncMutex<S>>` per session across the whole
+        // route, so same-session turns serialize and cannot interleave a classify with
+        // another turn's pin write. Both turns here are fresh user turns, so both
+        // legitimately classify — what must not happen is them landing on different
+        // tiers or corrupting the pin.
+        let judge = Judge::new([verdict_json(0.9)]);
+        let router = capability_router(FollowupConfig::default())?;
+
+        let (a, b) = tokio::join!(
+            test_drive(router.clone(), user_turn(), judge.serve()),
+            test_drive(router.clone(), user_turn(), judge.serve()),
+        );
+        let (trace_a, _) = a?;
+        let (trace_b, _) = b?;
+        assert_eq!(
+            trace_a.last().map(|d| d.selected_model_id()),
+            Some("efficient")
+        );
+        assert_eq!(
+            trace_b.last().map(|d| d.selected_model_id()),
+            Some("efficient")
+        );
+
+        // And the pin survives for a following tool turn, which rides it.
+        assert_eq!(
+            served(&router, &judge, tool_turn()).await?.as_deref(),
+            Some("efficient")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn followup_is_rejected_alongside_session_affinity() -> Result<()> {
+        // Affinity's latch is first-wins, so it would short-circuit the judge before
+        // follow-up could refresh — silently turning `on_user_turn` into `pin_once`.
+        let error = LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+            judge_target: target("judge"),
+            efficient_target: target("efficient"),
+            capable_target: target("capable"),
+            config: TaskClassifierConfig {
+                base_threshold: TEST_THRESHOLD,
+                session_affinity: true,
+                followup: Some(FollowupConfig::default()),
+                ..TaskClassifierConfig::default()
+            },
+        })
+        .err()
+        .map(|error| error.to_string())
+        .unwrap_or_default();
+
+        assert!(error.contains("session_affinity"), "{error}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_abstain_selector_is_rejected_in_capability_mode() -> Result<()> {
+        // The packaged capability rubric has no abstain field, so a selector would
+        // silently do nothing.
+        let error = capability_router(FollowupConfig {
+            abstain_selector: Some("/abstain".to_string()),
+            ..FollowupConfig::default()
+        })
+        .err()
+        .map(|error| error.to_string())
+        .unwrap_or_default();
+
+        assert!(error.contains("abstain_selector"), "{error}");
+        Ok(())
+    }
+
+    // ── Custom mode ────────────────────────────────────────────────────────────
+
+    fn custom_verdict(tier: &str, abstain: bool) -> String {
+        format!(r#"{{"recommended_tier":"{tier}","abstain":{abstain}}}"#)
+    }
+
+    #[tokio::test]
+    async fn custom_mode_pins_a_tool_turn_and_refreshes_on_a_user_turn() -> Result<()> {
+        // The benchmark's arm: mode = "custom" must honour the same refresh contract.
+        let judge = Judge::new([
+            custom_verdict("weak", false),
+            custom_verdict("strong", false),
+        ]);
+        let router = custom_router(FollowupConfig::default())?;
+
+        assert_eq!(
+            served(&router, &judge, user_turn()).await?.as_deref(),
+            Some("weak")
+        );
+        // A tool turn rides the pin without a second judge call.
+        assert_eq!(
+            served(&router, &judge, tool_turn()).await?.as_deref(),
+            Some("weak")
+        );
+        assert_eq!(judge.calls(), 1);
+        // A fresh user turn re-classifies and moves the pin.
+        assert_eq!(
+            served(&router, &judge, user_turn()).await?.as_deref(),
+            Some("strong")
+        );
+        assert_eq!(judge.calls(), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_custom_abstain_fails_open_to_default_target_over_an_incumbent() -> Result<()> {
+        // Asymmetry 1 in custom mode. The second verdict names a routable tier *and*
+        // abstains; the abstain must win, over both the verdict and the `weak` pin.
+        let judge = Judge::new([custom_verdict("weak", false), custom_verdict("weak", true)]);
+        let router = custom_router(FollowupConfig {
+            abstain_selector: Some("/abstain".to_string()),
+            ..FollowupConfig::default()
+        })?;
+
+        assert_eq!(
+            served(&router, &judge, user_turn()).await?.as_deref(),
+            Some("weak")
+        );
+        assert_eq!(
+            served(&router, &judge, user_turn()).await?.as_deref(),
+            Some("strong")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn without_a_selector_a_custom_abstain_holds_the_incumbent() -> Result<()> {
+        // The abstain flag is invisible without a pointer, so the verdict routes on its
+        // tier field alone — documented behaviour, not a silent failure.
+        let judge = Judge::new([custom_verdict("weak", false), custom_verdict("weak", true)]);
+        let router = custom_router(FollowupConfig::default())?;
+
+        assert_eq!(
+            served(&router, &judge, user_turn()).await?.as_deref(),
+            Some("weak")
+        );
+        assert_eq!(
+            served(&router, &judge, user_turn()).await?.as_deref(),
+            Some("weak")
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_fail_open_tier_is_rejected_in_custom_mode() -> Result<()> {
+        // Custom mode routes among labels and has no tier pair to name.
+        let error = custom_router(FollowupConfig {
+            fail_open_tier: Some(FailOpenTier::Efficient),
+            ..FollowupConfig::default()
+        })
+        .err()
+        .map(|error| error.to_string())
+        .unwrap_or_default();
+
+        assert!(error.contains("fail_open_tier"), "{error}");
+        Ok(())
     }
 }

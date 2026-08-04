@@ -133,6 +133,7 @@ Capability mode classifies before serving. See
 | `message_hash_fallback` | No | `false` | Keys affinity on the first user message. Requires `session_affinity`. |
 | `recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
 | `prompt` | No | packaged prompt | Replaces the capability prompt. The packaged schema is sent separately as structured-output configuration. |
+| `followup` | No | unset | Follow-up pinning table. See [Follow-up routing](#follow-up-routing). |
 
 Escalation mode serves the weak target first and judges the completed turn. See
 [Escalation-Router Routing](../routing_algorithms/escalation_router_routing.md).
@@ -161,6 +162,7 @@ policy selector, and routes to any configured target label.
 | `session_affinity` | No | `false` | Reuses a session's first decision on later turns. |
 | `message_hash_fallback` | No | `false` | Keys affinity on the first user message. Requires `session_affinity`. |
 | `recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
+| `followup` | No | unset | Follow-up pinning table. See [Follow-up routing](#follow-up-routing). |
 
 Classifier prompts must not contain `{{RESPONSE_SCHEMA}}`. Switchyard sends the
 schema only through the provider's structured-output request.
@@ -189,6 +191,45 @@ Every value in `labels` must name a configured target, and the table must not be
 rejected at load time. A verdict value absent from the map is unroutable, exactly as an unknown
 target label is, so `default_target` decides. Omit `labels` and verdict values are target labels,
 as before.
+
+#### Follow-up routing
+
+Classifying once per conversation lets the opening verdict go stale: a session that
+opened trivially becomes a hard debugging session ten turns later. The `followup` table
+re-classifies when the *user* asks something new and pins that target across the
+tool-call turns in between, so a tool chain never switches target mid-flight.
+
+Available on modes `capability` and `custom`. It cannot be combined with
+`session_affinity`, whose latch is first-wins and would prevent every refresh; use
+`followup = { refresh = "pin_once" }` for that behavior instead.
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `followup.refresh` | No | `on_user_turn` | `on_user_turn` re-classifies on each new user message; `pin_once` holds the first decision. |
+| `followup.recent_turn_window` | No | unset | Trailing turns the judge sees. Must be at least `1`. |
+| `followup.fail_open_tier` | No | `capable` | Tier served when the judge produces no usable verdict and nothing is pinned. Mode `capability` only. |
+| `followup.abstain_selector` | No | unset | JSON Pointer to a boolean abstain flag in the verdict, such as `/abstain`. Mode `custom` only. |
+
+```toml
+[routes.assistant]
+type = "llm_classifier"
+mode = "custom"
+followup = { refresh = "on_user_turn", recent_turn_window = 4, abstain_selector = "/abstain" }
+```
+
+Three behaviors are deliberate and worth stating:
+
+- an unusable verdict, or an unreachable judge, **holds the pinned target** — no evidence
+  is not evidence of change. It falls open only when nothing is pinned;
+- in mode `custom`, an explicit abstain read through `abstain_selector` routes to the
+  fail-open target **even when a target is already pinned** — the judge declining to
+  decide is itself a decision. Mode `capability` has no equivalent: its packaged rubric
+  answers with a solve probability and no abstain, so every verdict there is either
+  usable or it is not;
+- neither path retries the judge.
+
+Without `abstain_selector`, a custom verdict's abstain is indistinguishable from a
+malformed one, so it holds the incumbent rather than failing open.
 
 ### `stage_router`
 

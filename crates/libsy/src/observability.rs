@@ -187,6 +187,45 @@ fn record_run(algorithm: &str, duration: Duration, result: &Result<Response>, sp
         .record(duration.as_secs_f64() * 1000.0, &attributes);
 }
 
+/// Records a follow-up router re-pinning a conversation to a different tier.
+///
+/// Emitted as an OTel counter rather than a `RunObservation` variant: that enum is not
+/// `#[non_exhaustive]`, so adding to it would break every workspace consumer. Attribute
+/// names follow the GenAI semantic conventions already used for model attributes.
+///
+/// Flip rate is the stability signal for follow-up routing — a router that re-decides
+/// every turn is thrashing, not adapting. `/v1/routing/session-stats` already reports
+/// per-tier calls and tokens, so only the transitions are recorded here.
+pub fn record_tier_flip(algorithm: &str, from: &str, to: &str) {
+    meter().u64_counter("switchyard.tier_flips").build().add(
+        1,
+        &[
+            KeyValue::new("algorithm", algorithm.to_string()),
+            KeyValue::new("from_tier", from.to_string()),
+            KeyValue::new("to_tier", to.to_string()),
+        ],
+    );
+}
+
+/// Records a request re-sent on another target after the selected one failed the route.
+///
+/// `reason` separates the routing-quality signal from the operational one: a rising
+/// `capability` or `context_window` rate means a tier is being routed work it cannot do,
+/// while `unavailable` is an outage. Without it the three are indistinguishable, since
+/// the fallback loop serves all of them.
+/// Takes only the two targets: the loop is shared by every algorithm and has no
+/// algorithm name in scope, so labelling one here would be a guess.
+pub fn record_shim_retry(from: &str, to: &str, reason: &'static str) {
+    meter().u64_counter("switchyard.shim_retries").build().add(
+        1,
+        &[
+            KeyValue::new("from_target", from.to_string()),
+            KeyValue::new("to_target", to.to_string()),
+            KeyValue::new("reason", reason),
+        ],
+    );
+}
+
 /// Records a judge failure that made the classifier route without a verdict.
 pub(crate) fn record_classifier_fail_open(judge_model: &str, reason: &'static str) {
     meter()

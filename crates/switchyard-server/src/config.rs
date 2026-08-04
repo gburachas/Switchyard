@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use libsy::{
     Algorithm, ClassifierContractConfig, CustomClassifierConfig, CustomClassifierPolicy,
-    EscalationJudgeConfig, HandoffNoteConfig, LlmClassifierConfig, LlmFallback, LlmTarget,
-    LlmTargetSet, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random, StageRouter,
+    EscalationJudgeConfig, FollowupConfig, HandoffNoteConfig, LlmClassifierConfig, LlmFallback,
+    LlmTarget, LlmTargetSet, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random, StageRouter,
     StageRouterConfig, TargetPrompts, TaskClassifierConfig,
 };
 use serde::Deserialize;
@@ -319,6 +319,7 @@ struct CapabilityClassifierRouteConfig {
     max_output_tokens: u64,
     /// Bounds one judge consultation, in milliseconds. Omit to leave it unbounded.
     judge_deadline_ms: Option<u64>,
+    followup: Option<FollowupConfig>,
 }
 
 #[derive(Debug)]
@@ -341,6 +342,7 @@ struct CustomClassifierRouteConfig {
     message_hash_fallback: bool,
     recent_turn_window: Option<usize>,
     max_output_tokens: u64,
+    followup: Option<FollowupConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -423,6 +425,8 @@ enum RouteConfig {
         response_schema: Option<String>,
         #[serde(default)]
         policy: Option<ClassifierPolicyConfig>,
+        #[serde(default)]
+        followup: Option<FollowupConfig>,
     },
     StageRouter {
         id: String,
@@ -489,6 +493,10 @@ impl StageClassifierConfig {
             contract: classifier_contract(self.prompt.as_deref()),
             max_output_tokens: self.max_output_tokens,
             judge_deadline_ms: self.judge_deadline_ms,
+            // A stage router embeds this classifier, so only its inner score() runs —
+            // the route cascade follow-up attaches to never fires. The stage router
+            // holds a tier across turns through its own picker instead.
+            followup: None,
         }
     }
 }
@@ -620,6 +628,7 @@ impl RouteConfig {
             default_target,
             response_schema,
             policy,
+            followup,
             ..
         } = self
         else {
@@ -673,10 +682,16 @@ impl RouteConfig {
                         prompt: prompt.clone(),
                         max_output_tokens: *max_output_tokens,
                         judge_deadline_ms: *judge_deadline_ms,
+                        followup: followup.clone(),
                     },
                 ))
             }
             ClassifierMode::Escalation => {
+                // Escalation builds its own route rather than the shared affinity cascade
+                // follow-up attaches to, and its streak latch already spans turns.
+                if followup.is_some() {
+                    return Err(classifier_field_error(route_name, "followup", "escalation"));
+                }
                 reject_custom_fields(
                     route_name,
                     "escalation",
@@ -744,6 +759,7 @@ impl RouteConfig {
                         message_hash_fallback: *message_hash_fallback,
                         recent_turn_window: *recent_turn_window,
                         max_output_tokens: *max_output_tokens,
+                        followup: followup.clone(),
                     },
                 ))
             }
@@ -886,6 +902,7 @@ fn build_algorithm(
                         contract: classifier_contract(config.prompt.as_deref()),
                         max_output_tokens: config.max_output_tokens,
                         judge_deadline_ms: config.judge_deadline_ms,
+                        followup: config.followup,
                     };
                     LlmTaskClassifier::new(LlmClassifierConfig::Capability {
                         judge_target: classifier,
@@ -931,6 +948,7 @@ fn build_algorithm(
                     classifier_config.message_hash_fallback = config.message_hash_fallback;
                     classifier_config.recent_turn_window = config.recent_turn_window;
                     classifier_config.max_output_tokens = config.max_output_tokens;
+                    classifier_config.followup = config.followup;
                     LlmTaskClassifier::new(LlmClassifierConfig::Custom {
                         judge_target: classifier,
                         targets: resolved_targets,
@@ -1243,6 +1261,38 @@ policy = {{ type = "target_selector", selector = "/recommended_tier", labels = {
             error_message(&mixed)
                 .contains("mode custom cannot use capability or escalation fields")
         );
+    }
+
+    #[test]
+    fn followup_loads_on_capability_mode_and_is_rejected_on_escalation() -> ServerResult<()> {
+        let capability = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "base_threshold = 0.5\nfollowup = { refresh = \"on_user_turn\", recent_turn_window = 4 }",
+        );
+        server_state_from_toml(&capability)?;
+
+        // Escalation builds its own route rather than the cascade follow-up attaches to.
+        let escalation = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "mode = \"escalation\"\nfollowup = { refresh = \"on_user_turn\" }\nescalation = { confirmations = 2 }",
+        );
+        assert!(
+            error_message(&escalation).contains("mode escalation cannot use followup"),
+            "{}",
+            error_message(&escalation)
+        );
+
+        // Affinity's first-wins latch would prevent every refresh.
+        let with_affinity = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "base_threshold = 0.5\nsession_affinity = true\nfollowup = { refresh = \"on_user_turn\" }",
+        );
+        assert!(
+            error_message(&with_affinity).contains("session_affinity"),
+            "{}",
+            error_message(&with_affinity)
+        );
+        Ok(())
     }
 
     #[test]

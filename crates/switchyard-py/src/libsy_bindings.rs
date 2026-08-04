@@ -164,6 +164,9 @@ impl PyTaskClassifierConfig {
                 contract,
                 max_output_tokens,
                 judge_deadline_ms,
+                // Follow-up routing is configured through the native TOML deployment,
+                // which owns the route cascade it attaches to.
+                followup: None,
             },
         }
     }

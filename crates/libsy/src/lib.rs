@@ -27,6 +27,7 @@ pub use algorithms::stage::{LlmFallback, StageRouter, StageRouterConfig};
 pub use algorithms::util::affinity::AffinityRouter;
 pub use algorithms::util::classifier_contract::ClassifierContractConfig;
 pub use algorithms::util::escalation::EscalationJudgeConfig;
+pub use algorithms::util::followup::{FailOpenTier, FollowupConfig, RefreshPolicy};
 pub use algorithms::util::prompts::{SystemPromptProcessor, TargetPrompts, append_note};
 pub use algorithms::util::subagent::SubagentOverride;
 pub use algorithms::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSignals};
