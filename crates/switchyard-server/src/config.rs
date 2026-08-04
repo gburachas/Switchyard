@@ -268,7 +268,13 @@ enum ClientFormat {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 enum ClassifierPolicyConfig {
-    TargetSelector { selector: String },
+    TargetSelector {
+        selector: String,
+        /// Maps verdict values onto target labels, so a graded rubric can route several
+        /// grades to one target. Omit to treat verdict values as target labels.
+        #[serde(default)]
+        labels: Option<BTreeMap<String, String>>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -282,7 +288,13 @@ enum ClassifierMode {
 impl ClassifierPolicyConfig {
     fn into_libsy(self) -> CustomClassifierPolicy {
         match self {
-            Self::TargetSelector { selector } => CustomClassifierPolicy::target_selector(selector),
+            Self::TargetSelector { selector, labels } => {
+                let policy = CustomClassifierPolicy::target_selector(selector);
+                match labels {
+                    Some(labels) => policy.with_labels(labels),
+                    None => policy,
+                }
+            }
         }
     }
 }
@@ -1176,6 +1188,47 @@ target = "weak"
             "base_threshold = 0.5\nprompt = \"{{RESPONSE_SCHEMA}}\"",
         );
         assert!(error_message(&schema_placeholder).contains("schema is sent separately"));
+        Ok(())
+    }
+
+    /// A custom-mode route whose rubric grades difficulty instead of naming a target.
+    fn graded_custom_config(labels: &str) -> String {
+        VALID_CONFIG.replace(
+            "strong_target = \"strong\"\nweak_target = \"weak\"\nbase_threshold = 0.5",
+            &format!(
+                r#"mode = "custom"
+targets = ["strong", "weak"]
+default_target = "strong"
+prompt = "grade this turn"
+response_schema = '''
+{{"type":"object","properties":{{"recommended_tier":{{"type":"string"}}}},"required":["recommended_tier"],"additionalProperties":false}}
+'''
+policy = {{ type = "target_selector", selector = "/recommended_tier", labels = {labels} }}"#
+            ),
+        )
+    }
+
+    #[test]
+    fn a_policy_label_map_routes_several_grades_to_one_target() -> ServerResult<()> {
+        let graded = graded_custom_config(
+            r#"{ simple = "weak", medium = "weak", complex = "strong", reasoning = "strong" }"#,
+        );
+        server_state_from_toml(&graded)?;
+
+        // A label naming no configured target would route nowhere on a live verdict.
+        let unknown = graded_custom_config(r#"{ simple = "cheap" }"#);
+        assert!(
+            error_message(&unknown).contains("must be one of the configured targets"),
+            "{}",
+            error_message(&unknown)
+        );
+
+        let empty = graded_custom_config("{ }");
+        assert!(
+            error_message(&empty).contains("labels must not be empty"),
+            "{}",
+            error_message(&empty)
+        );
         Ok(())
     }
 

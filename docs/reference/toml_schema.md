@@ -157,13 +157,38 @@ policy selector, and routes to any configured target label.
 | `default_target` | Yes | — | Target used when the judge fails or its verdict cannot be routed. |
 | `prompt` | Yes | — | Judge system prompt. The configured inner schema is sent separately as structured-output configuration. |
 | `response_schema` | Yes | — | Inner JSON Schema encoded as a TOML string. Switchyard adds the provider wrapper. |
-| `policy` | Yes | — | Policy table. `target_selector` accepts a JSON Pointer such as `/decision/target`. |
+| `policy` | Yes | — | Policy table. `target_selector` accepts a JSON Pointer such as `/decision/target`, and an optional `labels` map. See [Grading rubrics](#grading-rubrics). |
 | `session_affinity` | No | `false` | Reuses a session's first decision on later turns. |
 | `message_hash_fallback` | No | `false` | Keys affinity on the first user message. Requires `session_affinity`. |
 | `recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
 
 Classifier prompts must not contain `{{RESPONSE_SCHEMA}}`. Switchyard sends the
 schema only through the provider's structured-output request.
+
+#### Grading rubrics
+
+`policy.selector` reads one field from the verdict and treats its value as a target label, so by
+default the judge must answer with a target name. Rubrics more often ask for a *judgement* on a
+scale that means something to the model, and let the deployment decide what each grade routes to.
+`policy.labels` expresses that mapping:
+
+```toml
+targets = ["weak", "strong"]
+default_target = "strong"
+
+[routes.assistant.policy]
+type = "target_selector"
+selector = "/recommended_tier"
+labels = { simple = "weak", medium = "weak", complex = "strong", reasoning = "strong" }
+```
+
+Several verdict values may share a target label. `targets` cannot express this itself: it is the
+set of models the route may dispatch to, so two entries resolving to one model are rejected.
+
+Every value in `labels` must name a configured target, and the table must not be empty — both are
+rejected at load time. A verdict value absent from the map is unroutable, exactly as an unknown
+target label is, so `default_target` decides. Omit `labels` and verdict values are target labels,
+as before.
 
 ### `stage_router`
 

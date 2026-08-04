@@ -382,10 +382,19 @@ impl TaskClassifierConfig {
 /// Policy that maps a custom classifier verdict to a routing target.
 #[derive(Clone, Debug)]
 pub enum CustomClassifierPolicy {
-    /// Resolves a JSON Pointer and treats its string value as a configured target label.
+    /// Resolves a JSON Pointer and treats its string value as a configured target label,
+    /// or as a key into `labels` when one is supplied.
     TargetSelector {
         /// JSON Pointer evaluated against each schema-validated verdict.
         selector: String,
+        /// Maps verdict values onto target labels, so several values may share a target.
+        ///
+        /// A rubric usually asks the judge for a graded judgement (`simple`, `medium`,
+        /// `complex`, `reasoning`) rather than for a model name, and the deployment decides
+        /// what each grade routes to. `targets` cannot express that: it is the set of models
+        /// the route may dispatch to, so two entries resolving to one model are rejected.
+        /// `None` keeps verdict values as target labels directly.
+        labels: Option<BTreeMap<String, String>>,
     },
 }
 
@@ -394,8 +403,56 @@ impl CustomClassifierPolicy {
     pub fn target_selector(selector: impl Into<String>) -> Self {
         Self::TargetSelector {
             selector: selector.into(),
+            labels: None,
         }
     }
+
+    /// Routes each verdict value through `labels` before looking up a target.
+    ///
+    /// Several values may name the same target label; a value absent from the map is
+    /// unroutable, exactly as an unknown target label is.
+    #[must_use]
+    pub fn with_labels(self, labels: BTreeMap<String, String>) -> Self {
+        let Self::TargetSelector { selector, .. } = self;
+        Self::TargetSelector {
+            selector,
+            labels: Some(labels),
+        }
+    }
+}
+
+/// Resolves a verdict-value → target-label map into a verdict-value → model map.
+///
+/// `target_map` carries the route's dispatch targets, label → model. Composing the two
+/// lets several verdict values share one model, which `targets` cannot express because a
+/// duplicate model there is a configuration error.
+fn verdict_lookup(
+    labels: BTreeMap<String, String>,
+    target_map: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>> {
+    if labels.is_empty() {
+        return Err(LibsyError::AlgorithmError {
+            message: "custom classifier policy labels must not be empty".to_string(),
+        });
+    }
+    labels
+        .into_iter()
+        .map(|(value, label)| {
+            // A label naming no configured target would silently route nowhere, so it is
+            // rejected at construction rather than discovered on a live verdict.
+            let target =
+                target_map
+                    .get(&label)
+                    .cloned()
+                    .ok_or_else(|| LibsyError::AlgorithmError {
+                        message: format!(
+                            "custom classifier policy label {label:?} for verdict value {value:?} \
+                         must be one of the configured targets"
+                        ),
+                    })?;
+            Ok((value, target))
+        })
+        .collect()
 }
 
 /// Settings for a classifier whose JSON Schema and target-selection policy are user supplied.
@@ -813,10 +870,14 @@ impl LlmTaskClassifier {
         } = config;
         let contract = ClassifierContract::from_inner_schema(&prompt, response_schema)?;
         let policy = match policy {
-            CustomClassifierPolicy::TargetSelector { selector } => {
-                CustomPolicyRuntime::TargetSelector(TargetSelectorPolicy::new(
-                    selector, target_map,
-                )?)
+            CustomClassifierPolicy::TargetSelector { selector, labels } => {
+                // Without a label map the verdict value is the target label, so the
+                // dispatch map is already the lookup map.
+                let lookup = match labels {
+                    Some(labels) => verdict_lookup(labels, &target_map)?,
+                    None => target_map,
+                };
+                CustomPolicyRuntime::TargetSelector(TargetSelectorPolicy::new(selector, lookup)?)
             }
         };
         let classifier: Arc<dyn Classifier<State>> = Arc::new(JudgeClassifier::new(
@@ -2021,5 +2082,171 @@ mod tests {
             Some("capable answer".to_string())
         );
         Ok(())
+    }
+
+    /// Graded-verdict label mapping: a rubric that grades difficulty, mapped onto targets.
+    mod label_map {
+        use serde_json::json;
+
+        use super::*;
+
+        /// The four-grade rubric shape: the judge grades difficulty, the deployment maps
+        /// grades onto tiers.
+        fn graded_labels() -> BTreeMap<String, String> {
+            BTreeMap::from([
+                ("simple".to_string(), "weak".to_string()),
+                ("medium".to_string(), "weak".to_string()),
+                ("complex".to_string(), "strong".to_string()),
+                ("reasoning".to_string(), "strong".to_string()),
+            ])
+        }
+
+        fn graded_policy() -> CustomClassifierPolicy {
+            CustomClassifierPolicy::target_selector("/recommended_tier")
+                .with_labels(graded_labels())
+        }
+
+        /// A custom-mode router whose rubric grades difficulty on a four-value enum.
+        fn graded_router(policy: CustomClassifierPolicy) -> Result<Arc<LlmTaskClassifier>> {
+            let target = |name: &str| LlmTarget {
+                semantic_name: name.to_string(),
+            };
+            let config = CustomClassifierConfig::new(
+                "grade this turn",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "recommended_tier": {
+                            "type": "string",
+                            "enum": ["simple", "medium", "complex", "reasoning"]
+                        }
+                    },
+                    "required": ["recommended_tier"],
+                    "additionalProperties": false
+                }),
+                policy,
+            );
+            Ok(Arc::new(LlmTaskClassifier::new(
+                LlmClassifierConfig::Custom {
+                    judge_target: target("judge"),
+                    targets: vec![
+                        ("weak".to_string(), target("weak")),
+                        ("strong".to_string(), target("strong")),
+                    ],
+                    default_target: "strong".to_string(),
+                    config,
+                },
+            )?))
+        }
+
+        /// Runs one turn with `verdict` queued for the judge and reports the serving target.
+        async fn served_with(
+            router: &Arc<LlmTaskClassifier>,
+            verdict: &'static str,
+        ) -> Result<Option<String>> {
+            let serve = queued(Queue::new(["answer"]), Queue::new([verdict]));
+            let (trace, _) = test_drive(router.clone(), classify_request(), serve).await?;
+            Ok(trace.last().map(|d| d.selected_model_id().to_string()))
+        }
+
+        #[tokio::test]
+        async fn four_grades_route_to_two_tiers() -> Result<()> {
+            // The mapping the Python classifier applied in code, now expressed in config.
+            for (verdict, expected) in [
+                (r#"{"recommended_tier":"simple"}"#, "weak"),
+                (r#"{"recommended_tier":"medium"}"#, "weak"),
+                (r#"{"recommended_tier":"complex"}"#, "strong"),
+                (r#"{"recommended_tier":"reasoning"}"#, "strong"),
+            ] {
+                let router = graded_router(graded_policy())?;
+                assert_eq!(
+                    served_with(&router, verdict).await?.as_deref(),
+                    Some(expected),
+                    "{verdict}"
+                );
+            }
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn a_grade_outside_the_map_falls_back_to_the_default_target() -> Result<()> {
+            // Schema validation rejects the verdict, so the judge yields nothing usable and
+            // the route's own default decides — the path an unknown target label takes too.
+            let router = graded_router(graded_policy())?;
+
+            assert_eq!(
+                served_with(&router, r#"{"recommended_tier":"trivial"}"#)
+                    .await?
+                    .as_deref(),
+                Some("strong")
+            );
+            Ok(())
+        }
+
+        #[test]
+        fn a_label_naming_no_configured_target_is_rejected() {
+            let policy = CustomClassifierPolicy::target_selector("/recommended_tier").with_labels(
+                BTreeMap::from([("simple".to_string(), "cheap".to_string())]),
+            );
+            let error = graded_router(policy)
+                .err()
+                .map(|error| error.to_string())
+                .unwrap_or_default();
+
+            assert!(
+                error.contains("must be one of the configured targets"),
+                "{error}"
+            );
+        }
+
+        #[test]
+        fn an_empty_label_map_is_rejected() {
+            // Every verdict would be unroutable: a config mistake rather than a policy.
+            let policy = CustomClassifierPolicy::target_selector("/recommended_tier")
+                .with_labels(BTreeMap::new());
+            let error = graded_router(policy)
+                .err()
+                .map(|error| error.to_string())
+                .unwrap_or_default();
+
+            assert!(error.contains("labels must not be empty"), "{error}");
+        }
+
+        #[tokio::test]
+        async fn omitting_labels_keeps_verdict_values_as_target_labels() -> Result<()> {
+            // The pre-existing behaviour, unchanged: the verdict names the target directly.
+            let target = |name: &str| LlmTarget {
+                semantic_name: name.to_string(),
+            };
+            let config = CustomClassifierConfig::new(
+                "route this turn",
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "recommended_tier": {"type": "string", "enum": ["weak", "strong"]}
+                    },
+                    "required": ["recommended_tier"],
+                    "additionalProperties": false
+                }),
+                CustomClassifierPolicy::target_selector("/recommended_tier"),
+            );
+            let router = Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Custom {
+                judge_target: target("judge"),
+                targets: vec![
+                    ("weak".to_string(), target("weak")),
+                    ("strong".to_string(), target("strong")),
+                ],
+                default_target: "strong".to_string(),
+                config,
+            })?);
+
+            assert_eq!(
+                served_with(&router, r#"{"recommended_tier":"weak"}"#)
+                    .await?
+                    .as_deref(),
+                Some("weak")
+            );
+            Ok(())
+        }
     }
 }
