@@ -700,6 +700,8 @@ struct FollowupRouting {
     refresh: followup::RefreshPolicy,
     /// Target served when the judge produces nothing usable and nothing is pinned.
     fail_open: String,
+    /// Whether to key the pin on the first user message absent a session id.
+    message_hash_fallback: bool,
 }
 
 /// Complete construction settings for one LLM classifier mode.
@@ -831,6 +833,7 @@ impl LlmTaskClassifier {
                     Some(FollowupRouting {
                         refresh: followup.refresh,
                         fail_open,
+                        message_hash_fallback: followup.message_hash_fallback,
                     }),
                 )
             }
@@ -963,6 +966,7 @@ impl LlmTaskClassifier {
                     Some(FollowupRouting {
                         refresh: followup.refresh,
                         fail_open,
+                        message_hash_fallback: followup.message_hash_fallback,
                     }),
                 )
             }
@@ -1058,6 +1062,9 @@ impl LlmTaskClassifier {
                 refresh: followup.refresh,
                 fail_open: followup.fail_open,
                 algorithm: ALGORITHM_NAME,
+                hashed_pins: followup
+                    .message_hash_fallback
+                    .then(|| parking_lot::Mutex::new(std::collections::HashMap::new())),
             }) as Arc<dyn Classifier<State>>,
             None => inner,
         };
@@ -2680,6 +2687,97 @@ mod followup_tests {
         assert_eq!(
             served(&router, &judge, tool_turn()).await?.as_deref(),
             Some("efficient")
+        );
+        Ok(())
+    }
+
+    /// The same conversation, with no session id at all — what a harness that speaks plain
+    /// OpenAI sends. `opening` is the first user message, which is what the pin keys on.
+    fn anonymous_turn(opening: &str) -> Request {
+        Request {
+            llm_request: text_request(Some("auto".to_string()), opening),
+            raw_request: None,
+            metadata: None,
+        }
+    }
+
+    fn hash_fallback(refresh: RefreshPolicy) -> FollowupConfig {
+        FollowupConfig {
+            refresh,
+            message_hash_fallback: true,
+            ..FollowupConfig::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn without_a_session_id_the_pin_dies_unless_the_hash_fallback_is_on() -> Result<()> {
+        // The pin normally lives in session state, which needs a session id to persist. A
+        // client that sends none re-classifies every turn, which would silently collapse
+        // `on_user_turn` and `pin_once` into identical behaviour.
+        let client = QueuedJudgeClient::new(&[verdict_json(0.9, 0.9, false)]);
+        let router = capability_router(
+            client.clone(),
+            FollowupConfig {
+                refresh: RefreshPolicy::PinOnce,
+                ..FollowupConfig::default()
+            },
+        )?;
+        for _ in 0..3 {
+            served(&router, anonymous_turn("fix the failing test")).await?;
+        }
+        assert_eq!(
+            client.judge_calls(),
+            3,
+            "no pin survives without a session id"
+        );
+
+        // With the fallback the first user message identifies the conversation instead.
+        let client = QueuedJudgeClient::new(&[verdict_json(0.9, 0.9, false)]);
+        let router = capability_router(client.clone(), hash_fallback(RefreshPolicy::PinOnce))?;
+        for _ in 0..3 {
+            served(&router, anonymous_turn("fix the failing test")).await?;
+        }
+        assert_eq!(
+            client.judge_calls(),
+            1,
+            "pin_once must classify exactly once"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_hash_fallback_keeps_separate_conversations_apart() -> Result<()> {
+        // Keying on the opening message must not merge two conversations into one pin.
+        let client = QueuedJudgeClient::new(&[verdict_json(0.9, 0.9, false)]);
+        let router = capability_router(client.clone(), hash_fallback(RefreshPolicy::PinOnce))?;
+
+        served(&router, anonymous_turn("fix the failing test")).await?;
+        served(&router, anonymous_turn("summarise this file")).await?;
+        served(&router, anonymous_turn("fix the failing test")).await?;
+
+        // Two distinct conversations, so two classifications; the third rides the first pin.
+        assert_eq!(client.judge_calls(), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn the_arms_diverge_under_the_hash_fallback() -> Result<()> {
+        // The whole point of the A/B: with the same anonymous traffic, pin_once decides once
+        // and on_user_turn decides per user turn. Equal counts here would mean the benchmark
+        // is comparing a policy against itself.
+        let mut counts = Vec::new();
+        for refresh in [RefreshPolicy::PinOnce, RefreshPolicy::OnUserTurn] {
+            let client = QueuedJudgeClient::new(&[verdict_json(0.9, 0.9, false)]);
+            let router = capability_router(client.clone(), hash_fallback(refresh))?;
+            for _ in 0..4 {
+                served(&router, anonymous_turn("fix the failing test")).await?;
+            }
+            counts.push(client.judge_calls());
+        }
+        assert_eq!(
+            counts,
+            vec![1, 4],
+            "pin_once vs on_user_turn must not coincide"
         );
         Ok(())
     }

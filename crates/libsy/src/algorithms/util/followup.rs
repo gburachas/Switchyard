@@ -17,14 +17,17 @@
 //!
 //! [`affinity`]: super::affinity
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use jsonptr::PointerBuf;
+use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::Value;
 use switchyard_protocol::{ContentBlock, Message, Request, Response, Role};
 
+use super::affinity::first_user_message_hash;
 use super::llm_judge::JudgePolicy;
 use crate::core::algorithm::Driver;
 use crate::core::classifier::{Classification, Classifier, Score};
@@ -83,6 +86,13 @@ pub struct FollowupConfig {
     /// it does in the capability verdict. Without this, an abstaining custom judge is
     /// indistinguishable from an unusable one and holds the incumbent instead of failing open.
     pub abstain_selector: Option<String>,
+    /// Keys the pin on the first user message when a request carries no session id.
+    ///
+    /// The pin normally lives in per-session state, which needs a session id to persist.
+    /// Clients that send none — benchmark harnesses typically do not — would otherwise
+    /// re-classify every turn, silently collapsing `on_user_turn` and `pin_once` into the
+    /// same behaviour. Mirrors `message_hash_fallback` on the route itself.
+    pub message_hash_fallback: bool,
 }
 
 impl FollowupConfig {
@@ -289,6 +299,66 @@ pub(crate) struct FollowupClassifier {
     pub(crate) fail_open: String,
     /// Algorithm name used to label tier-flip metrics.
     pub(crate) algorithm: &'static str,
+    /// Pins for conversations that arrive without a session id, keyed by a hash of the
+    /// first user message. `None` unless `message_hash_fallback` is configured.
+    ///
+    /// Session-keyed state cannot serve these: it needs a session id to persist, so every
+    /// turn would arrive with a fresh `State` and re-classify.
+    pub(crate) hashed_pins: Option<Mutex<HashMap<String, String>>>,
+}
+
+/// Upper bound on hash-keyed pins, keeping the process-local map from growing without
+/// limit; one arbitrary entry is evicted once the bound is reached.
+const MAX_HASHED_PINS: usize = 4096;
+
+impl FollowupClassifier {
+    /// The hash key for a request, when the pin cannot live in session state.
+    ///
+    /// Returns `None` whenever session state will do — a request carrying a session id is
+    /// already keyed correctly, and reading it from two places would let the two disagree.
+    fn hash_key(&self, request: &Request) -> Option<String> {
+        self.hashed_pins.as_ref()?;
+        if session_id(request).is_some() {
+            return None;
+        }
+        first_user_message_hash(request)
+    }
+
+    /// The pinned target for this conversation, from whichever store holds it.
+    fn pin(&self, state: &State, request: &Request) -> Option<String> {
+        match self.hash_key(request) {
+            Some(key) => self.hashed_pins.as_ref()?.lock().get(&key).cloned(),
+            None => pinned_tier(state),
+        }
+    }
+
+    /// Pins `tier`, returning the target it replaced.
+    fn set_pin(&self, state: &mut State, request: &Request, tier: &str) -> Option<String> {
+        let Some(key) = self.hash_key(request) else {
+            return set_pinned_tier(state, tier);
+        };
+        let Some(pins) = self.hashed_pins.as_ref() else {
+            return set_pinned_tier(state, tier);
+        };
+        let mut pins = pins.lock();
+        if pins.len() >= MAX_HASHED_PINS
+            && !pins.contains_key(&key)
+            && let Some(evicted) = pins.keys().next().cloned()
+        {
+            pins.remove(&evicted);
+        }
+        pins.insert(key, tier.to_string())
+    }
+}
+
+/// The request's session id, if it carries a non-empty one.
+fn session_id(request: &Request) -> Option<&str> {
+    request
+        .metadata
+        .as_ref()?
+        .session_id
+        .as_deref()
+        .filter(|id| !id.is_empty())
 }
 
 #[async_trait]
@@ -305,7 +375,7 @@ impl Classifier<State> for FollowupClassifier {
     ) -> Result<(Classification, Option<Response>)> {
         // The incumbent is read regardless of policy: a fresh turn hides the pin from
         // routing, but a re-classification still wants to know what it is replacing.
-        let incumbent = pinned_tier(state);
+        let incumbent = self.pin(state, request);
 
         // `pin_once` reuses the pin forever; `on_user_turn` reuses it only while the
         // client is feeding tool results back.
@@ -330,7 +400,7 @@ impl Classifier<State> for FollowupClassifier {
         };
         // A re-pin to a different target is a flip; the first pin of a conversation is
         // not, since there was nothing to move away from.
-        if let Some(previous) = set_pinned_tier(state, &tier)
+        if let Some(previous) = self.set_pin(state, request, &tier)
             && previous != tier
         {
             observability::record_tier_flip(self.algorithm, &previous, &tier);

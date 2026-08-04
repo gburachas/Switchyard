@@ -209,6 +209,7 @@ Available on modes `capability` and `custom`. It cannot be combined with
 | `followup.recent_turn_window` | No | unset | Trailing turns the judge sees. Must be at least `1`. |
 | `followup.fail_open_tier` | No | `capable` | Tier served when the judge produces no usable verdict and nothing is pinned. Mode `capability` only. |
 | `followup.abstain_selector` | No | unset | JSON Pointer to a boolean abstain flag in the verdict, such as `/abstain`. Mode `custom` only. |
+| `followup.message_hash_fallback` | No | `false` | Keys the pin on the first user message when a request carries no session id. |
 
 ```toml
 [routes.assistant]
@@ -230,6 +231,11 @@ Three behaviors are deliberate and worth stating:
 
 Without `abstain_selector`, a custom verdict's abstain is indistinguishable from a
 malformed one, so it holds the incumbent rather than failing open.
+
+The pin lives in per-session state, so it needs a session id to persist. A client that
+sends none re-classifies every turn — which makes `on_user_turn` behave exactly like
+`pin_once`, with nothing failing to signal it. Set `message_hash_fallback = true` to key
+the pin on the first user message instead, as `session_affinity` does for its own latch.
 
 ### `stage_router`
 

@@ -141,7 +141,7 @@ where
 /// Hashes the first user message so later turns retain the initial task's affinity.
 /// For benchmarking purpose with harnesses, task instructions are added as a user prompt to the request so we hash the initial user message.
 /// TODO: Have not considered multi-modal payloads yet. That needs to be handled separately.
-fn first_user_message_hash(request: &Request) -> Option<String> {
+pub(crate) fn first_user_message_hash(request: &Request) -> Option<String> {
     let message = request
         .llm_request
         .messages
