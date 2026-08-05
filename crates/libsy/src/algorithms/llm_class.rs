@@ -18,7 +18,8 @@ use super::util::affinity::AffinityRouter;
 use super::util::classifier_contract::{ClassifierContract, ClassifierContractConfig};
 use super::util::escalation::{self, EscalationJudge, EscalationJudgeConfig, EscalationPolicy};
 use super::util::followup::{
-    self, AbstainSelectorPolicy, FollowupClassifier, FollowupConfig, FollowupInput, decisive,
+    self, AbstainSelectorPolicy, CondensedInput, FollowupClassifier, FollowupConfig, FollowupInput,
+    decisive,
 };
 use super::util::llm_judge::{
     ClassifierInput, JsonSchemaDecoder, Judge, JudgeClassifier, JudgePolicy, JudgeRuntimeConfig,
@@ -814,20 +815,42 @@ impl LlmTaskClassifier {
                 followup.validate_capability()?;
                 let fail_open =
                     followup.fail_open_target(&capable, Some(&efficient), Some(&capable));
-                let classifier = Arc::new(TaskClassifier {
-                    classifier: JudgeClassifier::new(
-                        StructuredJudge::new(
-                            FollowupInput { inner: input },
-                            contract,
-                            SerdeDecoder::new(),
-                            runtime,
+                // The two inputs are different types, so each arm builds the whole
+                // classifier; only the judge's view of the conversation differs.
+                let classifier: Arc<dyn Classifier<State>> = match followup.judge_char_budget {
+                    Some(budget) => Arc::new(TaskClassifier {
+                        classifier: JudgeClassifier::new(
+                            StructuredJudge::new(
+                                CondensedInput {
+                                    recent_turn_window: config.recent_turn_window.unwrap_or(4),
+                                    budget,
+                                    reinforcement: END_POSITION_REINFORCEMENT,
+                                },
+                                contract,
+                                SerdeDecoder::new(),
+                                runtime,
+                            ),
+                            judge_target,
+                            policy,
                         ),
-                        judge_target,
-                        policy,
-                    ),
-                    efficient_target: efficient,
-                    capable_target: capable.clone(),
-                });
+                        efficient_target: efficient,
+                        capable_target: capable.clone(),
+                    }),
+                    None => Arc::new(TaskClassifier {
+                        classifier: JudgeClassifier::new(
+                            StructuredJudge::new(
+                                FollowupInput { inner: input },
+                                contract,
+                                SerdeDecoder::new(),
+                                runtime,
+                            ),
+                            judge_target,
+                            policy,
+                        ),
+                        efficient_target: efficient,
+                        capable_target: capable.clone(),
+                    }),
+                };
                 (
                     classifier,
                     Some(FollowupRouting {
@@ -943,23 +966,54 @@ impl LlmTaskClassifier {
             Some(followup) => {
                 followup.validate_custom()?;
                 let fail_open = default_semantic_name.clone();
-                let judge = StructuredJudge::new(
-                    FollowupInput { inner: input },
-                    contract,
-                    JsonSchemaDecoder::new(),
-                    runtime,
-                );
-                let classifier: Arc<dyn Classifier<State>> = match followup.abstain_pointer()? {
-                    Some(abstain) => Arc::new(JudgeClassifier::new(
-                        judge,
-                        judge_target,
-                        AbstainSelectorPolicy {
-                            inner: policy,
-                            abstain,
-                            fail_open: fail_open.clone(),
-                        },
-                    )),
-                    None => Arc::new(JudgeClassifier::new(judge, judge_target, policy)),
+                let abstain = followup.abstain_pointer()?;
+                // Each judge input is a distinct type, so the payload shape is chosen
+                // first and the policy applied inside each arm.
+                let classifier: Arc<dyn Classifier<State>> = match followup.judge_char_budget {
+                    Some(budget) => {
+                        let judge = StructuredJudge::new(
+                            CondensedInput {
+                                recent_turn_window: recent_turn_window.unwrap_or(4),
+                                budget,
+                                reinforcement: END_POSITION_REINFORCEMENT,
+                            },
+                            contract,
+                            JsonSchemaDecoder::new(),
+                            runtime,
+                        );
+                        match abstain {
+                            Some(abstain) => Arc::new(JudgeClassifier::new(
+                                judge,
+                                judge_target,
+                                AbstainSelectorPolicy {
+                                    inner: policy,
+                                    abstain,
+                                    fail_open: fail_open.clone(),
+                                },
+                            )),
+                            None => Arc::new(JudgeClassifier::new(judge, judge_target, policy)),
+                        }
+                    }
+                    None => {
+                        let judge = StructuredJudge::new(
+                            FollowupInput { inner: input },
+                            contract,
+                            JsonSchemaDecoder::new(),
+                            runtime,
+                        );
+                        match abstain {
+                            Some(abstain) => Arc::new(JudgeClassifier::new(
+                                judge,
+                                judge_target,
+                                AbstainSelectorPolicy {
+                                    inner: policy,
+                                    abstain,
+                                    fail_open: fail_open.clone(),
+                                },
+                            )),
+                            None => Arc::new(JudgeClassifier::new(judge, judge_target, policy)),
+                        }
+                    }
                 };
                 (
                     classifier,
@@ -2714,49 +2768,38 @@ mod followup_tests {
         // The pin normally lives in session state, which needs a session id to persist. A
         // client that sends none re-classifies every turn, which would silently collapse
         // `on_user_turn` and `pin_once` into identical behaviour.
-        let client = QueuedJudgeClient::new(&[verdict_json(0.9, 0.9, false)]);
-        let router = capability_router(
-            client.clone(),
-            FollowupConfig {
-                refresh: RefreshPolicy::PinOnce,
-                ..FollowupConfig::default()
-            },
-        )?;
+        let judge = Judge::new([verdict_json(0.9)]);
+        let router = capability_router(FollowupConfig {
+            refresh: RefreshPolicy::PinOnce,
+            ..FollowupConfig::default()
+        })?;
         for _ in 0..3 {
-            served(&router, anonymous_turn("fix the failing test")).await?;
+            served(&router, &judge, anonymous_turn("fix the failing test")).await?;
         }
-        assert_eq!(
-            client.judge_calls(),
-            3,
-            "no pin survives without a session id"
-        );
+        assert_eq!(judge.calls(), 3, "no pin survives without a session id");
 
         // With the fallback the first user message identifies the conversation instead.
-        let client = QueuedJudgeClient::new(&[verdict_json(0.9, 0.9, false)]);
-        let router = capability_router(client.clone(), hash_fallback(RefreshPolicy::PinOnce))?;
+        let judge = Judge::new([verdict_json(0.9)]);
+        let router = capability_router(hash_fallback(RefreshPolicy::PinOnce))?;
         for _ in 0..3 {
-            served(&router, anonymous_turn("fix the failing test")).await?;
+            served(&router, &judge, anonymous_turn("fix the failing test")).await?;
         }
-        assert_eq!(
-            client.judge_calls(),
-            1,
-            "pin_once must classify exactly once"
-        );
+        assert_eq!(judge.calls(), 1, "pin_once must classify exactly once");
         Ok(())
     }
 
     #[tokio::test]
     async fn the_hash_fallback_keeps_separate_conversations_apart() -> Result<()> {
         // Keying on the opening message must not merge two conversations into one pin.
-        let client = QueuedJudgeClient::new(&[verdict_json(0.9, 0.9, false)]);
-        let router = capability_router(client.clone(), hash_fallback(RefreshPolicy::PinOnce))?;
+        let judge = Judge::new([verdict_json(0.9)]);
+        let router = capability_router(hash_fallback(RefreshPolicy::PinOnce))?;
 
-        served(&router, anonymous_turn("fix the failing test")).await?;
-        served(&router, anonymous_turn("summarise this file")).await?;
-        served(&router, anonymous_turn("fix the failing test")).await?;
+        served(&router, &judge, anonymous_turn("fix the failing test")).await?;
+        served(&router, &judge, anonymous_turn("summarise this file")).await?;
+        served(&router, &judge, anonymous_turn("fix the failing test")).await?;
 
         // Two distinct conversations, so two classifications; the third rides the first pin.
-        assert_eq!(client.judge_calls(), 2);
+        assert_eq!(judge.calls(), 2);
         Ok(())
     }
 
@@ -2767,12 +2810,12 @@ mod followup_tests {
         // is comparing a policy against itself.
         let mut counts = Vec::new();
         for refresh in [RefreshPolicy::PinOnce, RefreshPolicy::OnUserTurn] {
-            let client = QueuedJudgeClient::new(&[verdict_json(0.9, 0.9, false)]);
-            let router = capability_router(client.clone(), hash_fallback(refresh))?;
+            let judge = Judge::new([verdict_json(0.9)]);
+            let router = capability_router(hash_fallback(refresh))?;
             for _ in 0..4 {
-                served(&router, anonymous_turn("fix the failing test")).await?;
+                served(&router, &judge, anonymous_turn("fix the failing test")).await?;
             }
-            counts.push(client.judge_calls());
+            counts.push(judge.calls());
         }
         assert_eq!(
             counts,

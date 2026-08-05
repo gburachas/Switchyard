@@ -86,6 +86,13 @@ pub struct FollowupConfig {
     /// it does in the capability verdict. Without this, an abstaining custom judge is
     /// indistinguishable from an unusable one and holds the incumbent instead of failing open.
     pub abstain_selector: Option<String>,
+    /// Renders the judge payload as one condensed block capped at this many characters.
+    ///
+    /// Unset sends the conversation as a message array. Setting it reproduces the
+    /// pre-migration Python payload contract, which the judge was tuned against: framing
+    /// and tool results are collapsed to `[role]` lines under a budget that sheds the
+    /// oldest window turn first. Verdicts are not comparable across the two shapes.
+    pub judge_char_budget: Option<usize>,
     /// Keys the pin on the first user message when a request carries no session id.
     ///
     /// The pin normally lives in per-session state, which needs a session id to persist.
@@ -553,5 +560,312 @@ mod tests {
         };
         assert!(malformed.abstain_pointer().is_err());
         Ok(())
+    }
+}
+
+// ── Condensed judge payload ────────────────────────────────────────────────
+
+/// Per-message cap for system/developer framing, which carries no task signal.
+const SYSTEM_CLIP_CAP: usize = 1_500;
+
+/// Cap for the first user message — the task statement, so it gets a wider share.
+const TASK_ANCHOR_CLIP_CAP: usize = 2_500;
+
+/// The newest turn is never clipped below this: a verdict on a question reduced to
+/// nothing is worse than a slightly over-budget payload.
+const NEWEST_TURN_FLOOR: usize = 500;
+
+/// Marks a message clipped from its tail.
+const TRUNCATION_SUFFIX: &str = "...<truncated>";
+
+/// Marks a message clipped from its head, keeping the tail.
+const TAIL_KEPT_PREFIX: &str = "<truncated>...";
+
+/// Characters reserved for a truncation marker when clipping.
+///
+/// Deliberately 16 rather than the markers' own 14: the payload contract this reproduces
+/// reserved a fixed 16, so a clipped line lands two characters under the cap. Matching the
+/// arithmetic — not just the intent — is what keeps verdicts comparable across the port.
+const CLIP_RESERVE: usize = 16;
+
+/// Flattens one message's content to plain text, the way the judge payload renders it.
+///
+/// Tool results and images collapse to placeholders: the classifier routes on the shape
+/// of the conversation, and a build log pasted whole would crowd out the actual question.
+fn text_of(message: &Message) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for block in &message.content {
+        match block {
+            ContentBlock::Text { text } => parts.push(text),
+            ContentBlock::ToolResult(_) => parts.push("<tool_result>"),
+            ContentBlock::Image { .. } => parts.push("<image>"),
+            _ => {}
+        }
+    }
+    parts.join(" ")
+}
+
+/// Clips from the tail, marking the cut.
+fn clip_head(text: &str, limit: usize) -> String {
+    if text.chars().count() <= limit {
+        return text.to_string();
+    }
+    let keep = limit.saturating_sub(CLIP_RESERVE);
+    text.chars().take(keep).collect::<String>() + TRUNCATION_SUFFIX
+}
+
+/// Clips from the head, keeping the tail — used for the newest turn, whose end holds
+/// the fresh question or result.
+fn clip_tail(text: &str, limit: usize) -> String {
+    let count = text.chars().count();
+    if count <= limit {
+        return text.to_string();
+    }
+    let keep = limit.saturating_sub(CLIP_RESERVE);
+    let skip = count.saturating_sub(keep);
+    TAIL_KEPT_PREFIX.to_string() + &text.chars().skip(skip).collect::<String>()
+}
+
+/// Renders the anchor-plus-window view of a conversation as one text block.
+///
+/// The judge sees a single condensed message rather than the conversation itself:
+/// `[system]` framing, the `[task]` anchor, then the trailing window as `[role]` lines.
+/// When the result exceeds `budget` it sheds the oldest window turn first, so the newest
+/// turn — the one the verdict is about — is the last thing to go.
+pub(crate) fn condense(messages: &[Message], window: usize, budget: usize) -> String {
+    let is_instruction = |m: &Message| matches!(m.role, Role::System | Role::Developer);
+    let system_parts: Vec<String> = messages
+        .iter()
+        .filter(|m| is_instruction(m))
+        .map(text_of)
+        .collect();
+    let first_user = messages.iter().position(|m| m.role == Role::User);
+    let tail: Vec<&Message> = messages
+        .iter()
+        .enumerate()
+        .filter(|(index, m)| !is_instruction(m) && Some(*index) != first_user)
+        .map(|(_, m)| m)
+        .collect();
+
+    let window = if window > 0 { window } else { 1 };
+    let window_msgs = &tail[tail.len().saturating_sub(window)..];
+
+    let mut lines: Vec<String> = Vec::new();
+    if !system_parts.is_empty() {
+        lines.push(clip_head(
+            &format!("[system] {}", system_parts.join(" ")),
+            SYSTEM_CLIP_CAP.min(budget / 5),
+        ));
+    }
+    if let Some(index) = first_user {
+        lines.push(clip_head(
+            &format!("[task] {}", text_of(&messages[index])),
+            TASK_ANCHOR_CLIP_CAP.min(budget / 3),
+        ));
+    }
+    let mut win_lines: Vec<String> = window_msgs
+        .iter()
+        .map(|m| format!("[{}] {}", role_label(m.role), text_of(m)))
+        .collect();
+
+    while !win_lines.is_empty() {
+        let text = lines
+            .iter()
+            .chain(win_lines.iter())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+        if text.chars().count() <= budget {
+            return text;
+        }
+        if win_lines.len() == 1 {
+            // One oversized newest turn: keep its tail rather than drop the question.
+            let head = lines.join("\n");
+            let room = budget
+                .saturating_sub(head.chars().count() + 1)
+                .max(NEWEST_TURN_FLOOR);
+            return head + "\n" + &clip_tail(&win_lines[0], room);
+        }
+        win_lines.remove(0);
+    }
+    lines.join("\n").chars().take(budget).collect()
+}
+
+/// The lowercase role name used in a condensed `[role]` line.
+fn role_label(role: Role) -> &'static str {
+    match role {
+        Role::User => "user",
+        Role::Assistant => "assistant",
+        Role::System => "system",
+        Role::Developer => "developer",
+        Role::Tool => "tool",
+    }
+}
+
+/// Presents the judge with one condensed message instead of the conversation itself.
+///
+/// This is the payload contract the pre-migration Python classifier used, and matching it
+/// matters: a judge shown a raw message array with full tool-result payloads reads a
+/// different conversation than one shown a budgeted `[task]`/`[role]` digest, and routes
+/// differently. The incumbent tier is appended into the same block, not sent separately.
+pub(crate) struct CondensedInput {
+    pub(crate) recent_turn_window: usize,
+    pub(crate) budget: usize,
+    /// Appended as its own trailing message, keeping the routing instruction last.
+    pub(crate) reinforcement: &'static str,
+}
+
+impl super::llm_judge::ClassifierInput for CondensedInput {
+    fn build_messages(&self, state: &State, request: &Request) -> Vec<Message> {
+        let mut blob = condense(
+            &request.llm_request.messages,
+            self.recent_turn_window,
+            self.budget,
+        );
+        if let Some(incumbent) = pinned_tier(state) {
+            blob.push('\n');
+            blob.push_str(&format!("{INCUMBENT_TIER_PREFIX} {incumbent}"));
+        }
+        vec![
+            Message::text(Role::User, blob),
+            Message::text(Role::User, self.reinforcement.to_string()),
+        ]
+    }
+}
+
+#[cfg(test)]
+mod condense_tests {
+    use super::*;
+    use switchyard_protocol::{LlmRequest, ToolResult};
+
+    fn msg(role: Role, text: &str) -> Message {
+        Message::text(role, text.to_string())
+    }
+
+    #[test]
+    fn renders_the_anchor_and_window_as_labelled_lines() {
+        let messages = vec![
+            msg(Role::System, "you are support"),
+            msg(Role::User, "my data is down"),
+            msg(Role::Assistant, "checking"),
+            msg(Role::User, "still down"),
+        ];
+        // Window of 2 keeps the two newest non-anchor turns; the anchor always survives.
+        assert_eq!(
+            condense(&messages, 2, 8_000),
+            "[system] you are support\n[task] my data is down\n[assistant] checking\n[user] still down"
+        );
+    }
+
+    #[test]
+    fn drops_the_oldest_window_turn_before_the_newest() {
+        let messages = vec![
+            msg(Role::User, "task"),
+            msg(Role::Assistant, "x".repeat(200).as_str()),
+            msg(Role::User, "the fresh question"),
+        ];
+        let out = condense(&messages, 2, 60);
+        // The newest turn is what the verdict is about, so it is the last thing shed.
+        assert!(out.contains("the fresh question"), "{out}");
+        assert!(!out.contains(&"x".repeat(200)), "{out}");
+    }
+
+    #[test]
+    fn keeps_the_tail_of_a_single_oversized_newest_turn() {
+        let messages = vec![
+            msg(Role::User, "task"),
+            msg(Role::User, &("y".repeat(2_000) + " THE QUESTION")),
+        ];
+        // The budget must exceed NEWEST_TURN_FLOOR for clipping to engage at all: below
+        // it the floor wins and the turn is passed through whole, deliberately.
+        let out = condense(&messages, 1, 800);
+        // Head-clipping would delete the question; the tail is kept instead.
+        assert!(out.contains("THE QUESTION"), "{out}");
+        assert!(out.contains(TAIL_KEPT_PREFIX), "{out}");
+    }
+
+    #[test]
+    fn tool_results_collapse_to_a_placeholder() {
+        // A build log pasted whole would crowd out the question it is evidence for.
+        let tool_turn = Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult(ToolResult {
+                tool_call_id: "c1".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "x".repeat(5_000),
+                }],
+                is_error: None,
+            })],
+        };
+        let out = condense(&[msg(Role::User, "task"), tool_turn], 1, 8_000);
+        assert!(out.ends_with("[user] <tool_result>"), "{out}");
+    }
+
+    #[test]
+    fn the_judge_sees_one_block_plus_the_reinforcement() {
+        use super::super::llm_judge::ClassifierInput;
+        let input = CondensedInput {
+            recent_turn_window: 4,
+            budget: 8_000,
+            reinforcement: "ROUTE IT",
+        };
+        let request = Request {
+            llm_request: LlmRequest {
+                messages: vec![msg(Role::User, "task"), msg(Role::User, "newest")],
+                ..LlmRequest::default()
+            },
+            raw_request: None,
+            metadata: None,
+        };
+        let mut state = State::default();
+        set_pinned_tier(&mut state, "weak");
+
+        let built = input.build_messages(&state, &request);
+        // Exactly two: the condensed block, then the routing instruction last.
+        assert_eq!(built.len(), 2);
+        let blob = built[0].text_content("").unwrap_or_default();
+        // The incumbent rides inside the block, not as a separate message.
+        assert!(blob.ends_with("[current_tier] weak"), "{blob}");
+        assert_eq!(built[1].text_content("").as_deref(), Some("ROUTE IT"));
+    }
+
+    /// Emits condensed payloads for fixtures so they can be diffed against the Python
+    /// implementation this port replicates. Inert unless `CONDENSE_PARITY_IN` is set, so
+    /// it costs nothing in a normal run but keeps the comparison reproducible.
+    #[test]
+    fn emit_condensed_payloads_for_parity() {
+        let Ok(input) = std::env::var("CONDENSE_PARITY_IN") else {
+            return;
+        };
+        let cases: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&input).unwrap_or_default())
+                .unwrap_or(serde_json::Value::Null);
+        let mut out: Vec<String> = Vec::new();
+        for case in cases.as_array().map(Vec::as_slice).unwrap_or_default() {
+            let messages: Vec<Message> = case["messages"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+                .iter()
+                .map(|m| {
+                    let role = match m["role"].as_str().unwrap_or("user") {
+                        "system" => Role::System,
+                        "developer" => Role::Developer,
+                        "assistant" => Role::Assistant,
+                        "tool" => Role::Tool,
+                        _ => Role::User,
+                    };
+                    Message::text(role, m["content"].as_str().unwrap_or_default().to_string())
+                })
+                .collect();
+            out.push(condense(
+                &messages,
+                case["window"].as_u64().unwrap_or(4) as usize,
+                case["budget"].as_u64().unwrap_or(8_000) as usize,
+            ));
+        }
+        if let Ok(path) = std::env::var("CONDENSE_PARITY_OUT") {
+            let _ = std::fs::write(path, serde_json::to_string(&out).unwrap_or_default());
+        }
     }
 }

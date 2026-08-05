@@ -210,6 +210,7 @@ Available on modes `capability` and `custom`. It cannot be combined with
 | `followup.fail_open_tier` | No | `capable` | Tier served when the judge produces no usable verdict and nothing is pinned. Mode `capability` only. |
 | `followup.abstain_selector` | No | unset | JSON Pointer to a boolean abstain flag in the verdict, such as `/abstain`. Mode `custom` only. |
 | `followup.message_hash_fallback` | No | `false` | Keys the pin on the first user message when a request carries no session id. |
+| `followup.judge_char_budget` | No | unset | Renders the judge payload as one condensed block capped at this many characters. |
 
 ```toml
 [routes.assistant]
