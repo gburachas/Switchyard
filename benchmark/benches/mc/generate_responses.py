@@ -16,10 +16,12 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 BASE = os.environ["MC_BASE_URL"].rstrip("/")
 KEY = os.environ["MC_API_KEY"]
@@ -74,29 +76,57 @@ def one(q: dict) -> dict:
     return {"QUESTION_ID": q["QUESTION_ID"], "RESPONSE": [text]}
 
 
-def main() -> None:
-    qs = [json.loads(l) for l in open(QUESTIONS) if l.strip()]
+def _write_responses(output_path: Path, questions: list[dict], results: dict) -> None:
+    """Atomically replace output_path once every response has succeeded."""
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=output_path.parent,
+            prefix=f".{output_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as output_file:
+            temporary_path = Path(output_file.name)
+            for question in questions:  # preserve original order
+                output_file.write(json.dumps(results[question["QUESTION_ID"]]) + "\n")
+        os.replace(temporary_path, output_path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
+def main() -> int:
+    with open(QUESTIONS, encoding="utf-8") as questions_file:
+        qs = [json.loads(line) for line in questions_file if line.strip()]
     print(f"{len(qs)} questions -> {OUT} via {MODEL} @ {BASE} ({WORKERS} workers)")
     results, failed = {}, []
     with ThreadPoolExecutor(max_workers=WORKERS) as ex:
         futs = {ex.submit(one, q): q["QUESTION_ID"] for q in qs}
         done = 0
-        for f in as_completed(futs):
-            qid = futs[f]
+        for future in as_completed(futs):
+            qid = futs[future]
             try:
-                results[qid] = f.result()
-            except Exception as e:  # noqa: BLE001
+                results[qid] = future.result()
+            except Exception as exc:  # noqa: BLE001
                 failed.append(qid)
-                print(f"FAILED {qid}: {e!r}", file=sys.stderr)
+                print(f"FAILED {qid}: {exc!r}", file=sys.stderr)
             done += 1
             if done % 25 == 0:
                 print(f"{done}/{len(qs)} done ({len(failed)} failed)")
-    with open(OUT, "w") as fh:
-        for q in qs:  # preserve original order
-            if q["QUESTION_ID"] in results:
-                fh.write(json.dumps(results[q["QUESTION_ID"]]) + "\n")
-    print(f"WROTE {len(results)}/{len(qs)} responses to {OUT}; failed: {len(failed)}")
+    if failed:
+        print(
+            f"FAILED {len(failed)}/{len(qs)} responses; no output was written to {OUT}",
+            file=sys.stderr,
+        )
+        return 1
+
+    _write_responses(Path(OUT), qs, results)
+    print(f"WROTE {len(results)}/{len(qs)} responses to {OUT}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
