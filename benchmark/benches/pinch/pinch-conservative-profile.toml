@@ -1,0 +1,90 @@
+# CONSERVATIVE sweep candidate: openclaw-conservative.md prompt (strong-default posture).
+# Native Switchyard routing profile. `session_affinity = true` is the sticky control.
+# To compare it with per-user-turn routing, add a native `followup` table to a copied profile.
+
+schema_version = 1
+
+[llm_clients.strong]
+format = "openai_chat"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+timeout_secs = 300
+
+[llm_clients.weak]
+format = "openai_chat"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+timeout_secs = 300
+
+[llm_clients.classifier]
+format = "openai_chat"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+timeout_secs = 60
+
+[targets.strong]
+id = "anthropic/claude-opus-4.7"
+llm_client = "strong"
+
+[targets.weak]
+id = "qwen/qwen3-35b-a3b"
+llm_client = "weak"
+
+[targets.classifier]
+id = "qwen/qwen3-35b-a3b"
+llm_client = "classifier"
+
+[routes.switchyard-cons]
+id = "switchyard-cons"
+type = "llm_classifier"
+classifier_target = "classifier"
+mode = "custom"
+recent_turn_window = 6
+session_affinity = true
+targets = ["weak", "strong"]
+default_target = "strong"
+response_schema = '''
+{
+  "type": "object",
+  "properties": {
+    "route": { "type": "string", "enum": ["weak", "strong"] },
+    "confidence": { "type": "number" },
+    "abstain": { "type": "boolean" }
+  },
+  "required": ["route", "confidence", "abstain"],
+  "additionalProperties": false
+}
+'''
+prompt = '''
+You are a routing classifier inside a general-purpose computer agent (OpenClaw).
+The agent handles productivity and coding tasks: web research, calendars, file
+transforms, log analysis, writing, coding jobs. You see a condensed view of the
+task/conversation. Return exactly one JSON object:
+
+{"route": "weak" or "strong", "confidence": number 0..1, "abstain": boolean}
+
+State the route DIRECTLY: "weak" = the small on-device model handles this turn;
+"strong" = escalate this turn to the frontier model.
+
+ROUTING BIAS: the STRONG tier is the DEFAULT for agent work. Route WEAK only
+when the turn is a PURE single-pass text transform over material already in
+the conversation — summarizing or rewriting provided text, extracting fields
+from given data, format conversion of supplied content, greetings and
+confirmations — AND nothing about the result gets machine-checked.
+
+Everything else goes STRONG. In particular, always STRONG:
+  any tool use (web, files, shell, calendar), any multi-step or multi-file
+  work, anything with an exact output contract (JSON schemas, file formats,
+  tests), log/data analysis, code that will be executed, planning, and any
+  turn where a plausible-but-wrong answer costs the user.
+
+Heuristic: "Would a careful person double-check this result? If yes, STRONG."
+When in doubt, STRONG.
+
+Set abstain=true only if truly unclassifiable. No markdown, no
+chain-of-thought — only the JSON object.
+'''
+
+[routes.switchyard-cons.policy]
+type = "target_selector"
+selector = "/route"

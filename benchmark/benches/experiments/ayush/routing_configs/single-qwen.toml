@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Pure single-model baseline using the configured OpenRouter Qwen deployment. No
+# classifier or routing; this is the weak-tier control for the sticky config.
+
+schema_version = 1
+
+[llm_clients.target]
+format = "openai_chat"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+timeout_secs = 600
+
+[targets.target]
+id = "qwen/qwen3-35b-a3b"
+llm_client = "target"
+
+[routes.switchyard]
+id = "switchyard"
+type = "passthrough"
+target = "target"

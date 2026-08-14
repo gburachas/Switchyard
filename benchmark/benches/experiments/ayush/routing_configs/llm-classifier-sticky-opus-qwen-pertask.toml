@@ -1,0 +1,162 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Per-TASK variant of llm-classifier-sticky-opus-qwen.toml: identical tiers,
+# but the classifier prompt is reframed to score the ENTIRE task (routing is
+# sticky, so one decision covers every turn). Same output schema.
+
+schema_version = 1
+
+[llm_clients.strong]
+format = "openai_chat"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+timeout_secs = 600
+
+[llm_clients.weak]
+format = "openai_chat"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+timeout_secs = 600
+
+[llm_clients.classifier]
+format = "openai_chat"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+timeout_secs = 30
+
+[targets.strong]
+id = "anthropic/claude-opus-4.7"
+llm_client = "strong"
+extra_body = { thinking = { type = "adaptive" }, output_config = { effort = "high" } }
+
+[targets.weak]
+id = "qwen/qwen3-35b-a3b"
+llm_client = "weak"
+
+[targets.classifier]
+id = "qwen/qwen3-35b-a3b"
+llm_client = "classifier"
+
+[routes.switchyard]
+id = "switchyard"
+type = "llm_classifier"
+classifier_target = "classifier"
+mode = "custom"
+recent_turn_window = 4
+session_affinity = true
+targets = ["weak", "strong"]
+default_target = "strong"
+response_schema = '''
+{
+  "type": "object",
+  "properties": {
+    "recommended_tier": {
+      "type": "string",
+      "enum": [
+        "simple",
+        "medium",
+        "complex",
+        "reasoning"
+      ]
+    },
+    "confidence": {
+      "type": "number"
+    },
+    "abstain": {
+      "type": "boolean"
+    },
+    "turn_type": {
+      "type": "string"
+    },
+    "code_modification_scope": {
+      "type": "string"
+    },
+    "tool_call_count_estimate": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "requires_codebase_context": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "recommended_tier"
+  ],
+  "additionalProperties": false
+}
+'''
+prompt = '''
+You are a routing classifier for a coding-agent harness (Claude Code,
+Codex CLI, Cursor, or similar). You are shown the START of a task: the
+system prompt plus the first user message, which together contain the
+COMPLETE task specification. Routing is sticky — the single tier you pick
+here handles EVERY turn of this task. So judge the difficulty of
+completing the ENTIRE task end-to-end, not any one turn. Return exactly
+one JSON object matching this schema:
+
+{
+  "recommended_tier": one of ["simple", "medium", "complex", "reasoning"],
+  "confidence": number between 0 and 1,
+  "abstain": boolean,
+  "turn_type": one of ["chitchat", "planning", "exploration", "edit",
+    "debug", "explanation", "clarification", "summarize"],
+  "code_modification_scope": one of ["none", "single_line", "function",
+    "file", "multi_file", "cross_module"],
+  "tool_call_count_estimate": non-negative integer,
+  "requires_codebase_context": boolean
+}
+
+Interpret every feature at TASK scope:
+- turn_type: the dominant activity the task demands overall.
+- code_modification_scope: the widest code change the task requires
+  anywhere in its solution.
+- tool_call_count_estimate: total tool calls the whole task will plausibly
+  need (reads + edits + test/build runs across all turns), not just turn one.
+- requires_codebase_context: true if solving it needs understanding code
+  beyond the files named in the prompt.
+
+# Tier rubric — RELATIVE TO THE WEAK MODEL, NOT ABSOLUTE DIFFICULTY
+
+You route between two near-frontier models. The weak tier is itself a
+top-class model that handles routine coding, exploration, single-file
+edits, normal debugging, and most refactors without meaningful loss. The
+strong tier (Opus 4.7 / frontier) only earns its keep on the long tail of
+subtle cross-module reasoning the weak tier fumbles. Ask: would the strong
+tier actually outperform the weak tier on THIS task, or would both finish
+it equally well? If both would be fine, it is MEDIUM.
+
+- simple    — trivial one-shot tasks: a single-line edit or a
+              status/lookup answerable without real code work.
+- medium    — DEFAULT for substantive coding tasks: function/file-scope
+              implementation or edits, localized debugging, routine
+              refactors, mechanical test/build fixes, scaffolding from a
+              template. The weak tier completes these fine.
+- complex   — tasks the weak tier would meaningfully botch: cross-module
+              refactors with subtle invariants, multi-file debugging whose
+              root cause needs reasoning the weak tier misses (races,
+              type-system interactions, non-obvious data flow), architecture
+              with non-obvious trade-offs, security/correctness-sensitive
+              logic with easy-to-miss footguns.
+- reasoning — frontier-only tasks: novel algorithm synthesis, correctness
+              proofs, deep multi-step derivation. Rare; if tempted, it is
+              usually COMPLEX.
+
+Default to MEDIUM; escalate to COMPLEX when the task PLAUSIBLY requires
+cross-file reasoning, subtle invariants, or correctness-sensitive logic the
+weak tier could miss. A plausible failure mode is enough — you do not need
+certainty. Judge by the hardest part of the task, since the whole task runs
+on the one tier you choose.
+
+recommended_tier is your own best guess; the downstream router also computes
+a deterministic tier from the other fields, so extract accurate task-level
+features. Set "abstain": true with low confidence only if the first user
+message lacks enough of a task to classify. Do not emit markdown,
+commentary, or chain-of-thought.
+
+'''
+
+[routes.switchyard.policy]
+type = "target_selector"
+selector = "/recommended_tier"
+labels = { simple = "weak", medium = "weak", complex = "strong", reasoning = "strong" }

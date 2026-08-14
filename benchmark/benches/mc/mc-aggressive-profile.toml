@@ -1,0 +1,85 @@
+# Native Switchyard routing profile. `session_affinity = true` is the sticky control.
+# To compare it with per-user-turn routing, add a native `followup` table to a copied profile.
+
+schema_version = 1
+
+[llm_clients.strong]
+format = "openai_chat"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+timeout_secs = 300
+
+[llm_clients.weak]
+format = "openai_chat"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+timeout_secs = 300
+
+[llm_clients.classifier]
+format = "openai_chat"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+timeout_secs = 60
+
+[targets.strong]
+id = "anthropic/claude-opus-4.7"
+llm_client = "strong"
+
+[targets.weak]
+id = "qwen/qwen3-35b-a3b"
+llm_client = "weak"
+
+[targets.classifier]
+id = "qwen/qwen3-35b-a3b"
+llm_client = "classifier"
+
+[routes.switchyard]
+id = "switchyard"
+type = "llm_classifier"
+classifier_target = "classifier"
+mode = "custom"
+recent_turn_window = 6
+session_affinity = true
+targets = ["weak", "strong"]
+default_target = "strong"
+response_schema = '''
+{
+  "type": "object",
+  "properties": {
+    "route": { "type": "string", "enum": ["weak", "strong"] },
+    "confidence": { "type": "number" },
+    "abstain": { "type": "boolean" }
+  },
+  "required": ["route", "confidence", "abstain"],
+  "additionalProperties": false
+}
+'''
+prompt = '''
+You are a routing classifier for a general assistant (research, documents,
+Q&A, planning). You see a condensed conversation view and return exactly one
+JSON object:
+
+{"route": "weak" or "strong", "confidence": number 0..1, "abstain": boolean}
+
+State the route DIRECTLY: "weak" = the on-device assistant handles this turn;
+"strong" = escalate this turn to the frontier model.
+
+ROUTING BIAS: the WEAK tier is the DEFAULT. It handles the overwhelming
+majority of assistant work correctly: lookups, summaries, rewrites,
+extractions, comparisons, single-step math, drafting from clear instructions,
+and multi-part requests whose parts are each direct. ROUTE TO WEAK UNLESS YOU
+CAN NAME A SPECIFIC REASON IT WILL FAIL.
+
+Escalate to route "strong" ONLY for a CONCRETE named hard
+property: genuine multi-hop synthesis across conflicting sources, formal
+math/logic chains, or high-stakes judgment where a wrong answer is costly and
+hard to detect. "Substantial", "important", or "long" is NOT a reason.
+WHEN IN DOUBT, CHOOSE THE WEAKER TIER.
+
+Set abstain=true only when truly unclassifiable. No markdown, no
+chain-of-thought — only the JSON object.
+'''
+
+[routes.switchyard.policy]
+type = "target_selector"
+selector = "/route"

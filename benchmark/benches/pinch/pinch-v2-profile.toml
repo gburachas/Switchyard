@@ -1,0 +1,131 @@
+# Native Switchyard routing profile. `session_affinity = true` is the sticky control.
+# To compare it with per-user-turn routing, add a native `followup` table to a copied profile.
+
+schema_version = 1
+
+[llm_clients.strong]
+format = "openai_chat"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+timeout_secs = 300
+
+[llm_clients.weak]
+format = "openai_chat"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+timeout_secs = 300
+
+[llm_clients.classifier]
+format = "openai_chat"
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+timeout_secs = 60
+
+[targets.strong]
+id = "anthropic/claude-opus-4.7"
+llm_client = "strong"
+
+[targets.weak]
+id = "qwen/qwen3-35b-a3b"
+llm_client = "weak"
+
+[targets.classifier]
+id = "qwen/qwen3-35b-a3b"
+llm_client = "classifier"
+
+[routes.switchyard]
+id = "switchyard"
+type = "llm_classifier"
+classifier_target = "classifier"
+mode = "custom"
+recent_turn_window = 6
+session_affinity = true
+targets = ["weak", "strong"]
+default_target = "strong"
+response_schema = '''
+{
+  "type": "object",
+  "properties": {
+    "recommended_tier": {
+      "type": "string",
+      "enum": [
+        "simple",
+        "medium",
+        "complex",
+        "reasoning"
+      ]
+    },
+    "confidence": {
+      "type": "number"
+    },
+    "abstain": {
+      "type": "boolean"
+    },
+    "turn_type": {
+      "type": "string"
+    },
+    "code_modification_scope": {
+      "type": "string"
+    },
+    "tool_call_count_estimate": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "requires_codebase_context": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "recommended_tier"
+  ],
+  "additionalProperties": false
+}
+'''
+prompt = '''
+You are a routing classifier in a coding-agent harness. You see ONE turn
+and return exactly one JSON object:
+
+{
+  "recommended_tier": one of ["simple","medium","complex","reasoning"],
+  "confidence": number 0..1,
+  "abstain": boolean,
+  "turn_type": one of ["chitchat","planning","exploration","edit","debug","explanation","clarification","summarize"],
+  "code_modification_scope": one of ["none","single_line","function","file","multi_file","cross_module"],
+  "tool_call_count_estimate": non-negative integer,
+  "requires_codebase_context": boolean
+}
+
+DISCRIMINATE BY KIND OF WORK, not by size. The weak tier is a smaller
+model: excellent at MECHANICAL work, weaker at NOVEL REASONING.
+
+Route to WEAK (medium/simple) when the turn is MECHANICAL — the steps are
+clear and it's about execution, not figuring out something subtle:
+  reading/searching files, running commands/builds/tests, applying a
+  clearly-specified edit, boilerplate/scaffolding, formatting, simple data
+  transforms, following an explicit recipe, reporting results.
+
+Route to STRONG (complex/reasoning) when the turn requires NON-OBVIOUS
+REASONING the weak model is likely to get wrong:
+  diagnosing a bug whose cause is not yet known, designing/choosing an
+  approach with real trade-offs, changes that must preserve subtle
+  invariants across code, concurrency/security/correctness-sensitive
+  logic, or anything where a plausible-looking-but-wrong answer is costly.
+
+Heuristic: "Are the steps already clear (→ weak), or does this turn require
+figuring out something non-obvious (→ strong)?" Size/# of tools alone does
+NOT decide it — a big mechanical edit is WEAK; a one-line fix to a subtle
+bug is STRONG.
+
+Feature extraction: set turn_type to "debug" only for not-yet-understood
+root-causing (→strong); localized, understood fixes are "edit" (→weak).
+Set scope honestly. Count only this turn's tool calls.
+
+Set abstain=true (low confidence) only when truly unclassifiable. No
+markdown, no commentary, no chain-of-thought — only the JSON object.
+
+'''
+
+[routes.switchyard.policy]
+type = "target_selector"
+selector = "/recommended_tier"
+labels = { simple = "weak", medium = "weak", complex = "strong", reasoning = "strong" }
