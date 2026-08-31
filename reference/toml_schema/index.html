@@ -599,6 +599,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../routing_algorithms/subagent_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sub-Agent-Aware Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../routing_algorithms/random_routing/" class="md-nav__link">
         
   
@@ -683,6 +711,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../routing_algorithms/composite_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Composite Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../routing_algorithms/escalation_router_routing/" class="md-nav__link">
         
   
@@ -691,6 +747,34 @@
     
   
     Escalation-Router Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../routing_algorithms/advisor_gate_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Advisor-Gate Routing
   
 
     
@@ -791,6 +875,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/soak_test/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Soak Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -866,7 +978,7 @@
   <span class="md-ellipsis">
     
   
-    CLI Reference
+    Server CLI Reference
   
 
     
@@ -1042,6 +1154,17 @@
     <span class="md-ellipsis">
       
         stage_router
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#composite" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        composite
       
     </span>
   </a>
@@ -1247,6 +1370,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#composite" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        composite
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1295,9 +1429,8 @@
 
 
 <h1 id="toml-schema">TOML Schema<a class="headerlink" href="#toml-schema" title="Permanent link">&para;</a></h1>
-<p>The native deployment file defines the LLM clients, targets, and routes a
-Switchyard server serves. It is read by <code>switchyard-server --config</code> and by
-<code>switchyard launch --config</code>.</p>
+<p>The native deployment file defines the LLM clients, targets, and routes that a
+Switchyard server serves. It is read by <code>switchyard-server --config</code>.</p>
 <p>Validate a file without starting the server:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span>--dry-run
 </span></code></pre></div>
@@ -1354,10 +1487,16 @@ route reaches no upstream. A file without a <code>[targets]</code> table is reje
 <td>Name of the environment variable holding the key. Omit to send no authentication.</td>
 </tr>
 <tr>
+<td><code>forward_auth</code></td>
+<td style="text-align: center;">No</td>
+<td><code>false</code></td>
+<td>Forward the caller's provider credential to this upstream.</td>
+</tr>
+<tr>
 <td><code>extra_headers</code></td>
 <td style="text-align: center;">No</td>
 <td><code>{}</code></td>
-<td>Extra HTTP headers sent upstream.</td>
+<td>Custom HTTP headers sent to the model server. Set credentials with <code>api_key_env</code> or <code>forward_auth</code>; the server rejects headers owned by the selected auth mode. Header names are case-insensitive.</td>
 </tr>
 <tr>
 <td><code>max_retries</code></td>
@@ -1369,6 +1508,25 @@ route reaches no upstream. A file without a <code>[targets]</code> table is reje
 </table>
 <p>The TOML never contains the secret itself. <code>api_key_env</code> names a variable that
 must exist and be non-empty when the server loads.</p>
+<p>Set <code>forward_auth = true</code> to use each caller's credential instead of a
+server-owned key:</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[llm_clients.claude]</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">format</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;anthropic_messages&quot;</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">base_url</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;https://api.anthropic.com&quot;</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="n">forward_auth</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+</span></code></pre></div>
+<p><code>forward_auth</code> cannot be combined with <code>api_key_env</code>. OpenAI clients forward
+<code>authorization</code>, <code>chatgpt-account-id</code>, and <code>x-openai-fedramp</code>. Anthropic clients
+forward <code>authorization</code> or <code>x-api-key</code>; for Claude subscription OAuth, they also
+forward <code>oauth-*</code> values from <code>anthropic-beta</code> and remove all other inbound beta
+values.</p>
+<p>This setting gives <code>base_url</code> the caller's login. Enable it only when that
+upstream should receive the credential, and use HTTPS unless the upstream runs
+on loopback. Forwarding clients do not follow HTTP redirects. Check every
+forwarding client used by a route, including classifier and judge targets. The
+server rejects an Anthropic forwarding route called through an OpenAI endpoint,
+or an OpenAI forwarding route called through an Anthropic endpoint, before it
+calls an upstream.</p>
 <h2 id="targetsname"><code>[targets.&lt;name&gt;]</code><a class="headerlink" href="#targetsname" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -1449,16 +1607,17 @@ must exist and be non-empty when the server loads.</p>
 upstream model. Use it for local smoke tests.</p>
 <p>A noop-only deployment reaches no upstream but still needs the <code>[targets]</code>
 table, which can be empty:</p>
-<div class="language-toml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">schema_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="k">[targets]</span>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>
-</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="k">[routes.smoke]</span>
-</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;noop-route&quot;</span>
-</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;noop&quot;</span>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">schema_version</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="k">[targets]</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="k">[routes.smoke]</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;noop-route&quot;</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;noop&quot;</span>
 </span></code></pre></div>
 <h3 id="passthrough"><code>passthrough</code><a class="headerlink" href="#passthrough" title="Permanent link">&para;</a></h3>
-<p>Sends every request to one target.</p>
+<p>Sends parent requests to one target. It can also route delegated sub-agent work;
+see <a href="../../routing_algorithms/subagent_routing/">Sub-Agent-Aware Routing</a>.</p>
 <table>
 <thead>
 <tr>
@@ -1471,7 +1630,12 @@ table, which can be empty:</p>
 <tr>
 <td><code>target</code></td>
 <td style="text-align: center;">Yes</td>
-<td>Target every request is sent to.</td>
+<td>Target used for parent and harness-maintenance requests.</td>
+</tr>
+<tr>
+<td><code>subagents</code></td>
+<td style="text-align: center;">No</td>
+<td>Nested <code>passthrough</code> or <code>llm_classifier</code> policy used only for delegated sub-agent work. Nested classifiers currently support only <code>mode = "custom"</code>.</td>
 </tr>
 </tbody>
 </table>
@@ -1539,6 +1703,12 @@ table, which can be empty:</p>
 <td><code>4096</code></td>
 <td>Maximum completion tokens for the judge verdict. Must be at least <code>1</code>.</td>
 </tr>
+<tr>
+<td><code>response_format_type</code></td>
+<td style="text-align: center;">No</td>
+<td><code>json_schema</code></td>
+<td>Structured-output mode for capability and escalation judges. Use <code>json_object</code> when the provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. Custom mode always uses its configured JSON Schema.</td>
+</tr>
 </tbody>
 </table>
 <p>Capability mode classifies before serving. See
@@ -1578,16 +1748,16 @@ table, which can be empty:</p>
 <td>Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. <code>base_threshold + 2 * threshold_step</code> must be at most <code>1</code>.</td>
 </tr>
 <tr>
-<td><code>session_affinity</code></td>
+<td><code>classify_trigger</code></td>
 <td style="text-align: center;">No</td>
-<td><code>false</code></td>
-<td>Reuses a session's first decision on later turns.</td>
+<td><code>every_request</code></td>
+<td>When the judge runs. <code>every_request</code> judges every request, tool continuations included. <code>user_turn</code> judges each new user message and retains that target across intervening tool calls only when requests carry a session ID; without a session ID, it behaves like <code>every_request</code>. <code>new_session</code> judges once and reuses that target for the session.</td>
 </tr>
 <tr>
 <td><code>message_hash_fallback</code></td>
 <td style="text-align: center;">No</td>
 <td><code>false</code></td>
-<td>Keys affinity on the first user message. Requires <code>session_affinity</code>.</td>
+<td>Keys affinity on the first user message. Requires <code>classify_trigger = "new_session"</code>.</td>
 </tr>
 <tr>
 <td><code>recent_turn_window</code></td>
@@ -1697,16 +1867,16 @@ policy selector, and routes to any configured target label.</p>
 <td>Policy table. <code>target_selector</code> accepts a JSON Pointer such as <code>/decision/target</code>.</td>
 </tr>
 <tr>
-<td><code>session_affinity</code></td>
+<td><code>classify_trigger</code></td>
 <td style="text-align: center;">No</td>
-<td><code>false</code></td>
-<td>Reuses a session's first decision on later turns.</td>
+<td><code>every_request</code></td>
+<td>When the judge runs. <code>every_request</code> judges every request, tool continuations included. <code>user_turn</code> judges each new user message and retains that target across intervening tool calls only when requests carry a session ID; without a session ID, it behaves like <code>every_request</code>. <code>new_session</code> judges once and reuses that target for the session.</td>
 </tr>
 <tr>
 <td><code>message_hash_fallback</code></td>
 <td style="text-align: center;">No</td>
 <td><code>false</code></td>
-<td>Keys affinity on the first user message. Requires <code>session_affinity</code>.</td>
+<td>Keys affinity on the first user message. Requires <code>classify_trigger = "new_session"</code>.</td>
 </tr>
 <tr>
 <td><code>recent_turn_window</code></td>
@@ -1716,8 +1886,9 @@ policy selector, and routes to any configured target label.</p>
 </tr>
 </tbody>
 </table>
-<p>Classifier prompts must not contain <code>{{RESPONSE_SCHEMA}}</code>. Switchyard sends the
-schema only through the provider's structured-output request.</p>
+<p>Classifier prompts must not contain <code>{{RESPONSE_SCHEMA}}</code>. Switchyard supplies
+the schema automatically: through the structured-output request in <code>json_schema</code>
+mode, or in the prompt in <code>json_object</code> mode.</p>
 <h3 id="stage_router"><code>stage_router</code><a class="headerlink" href="#stage_router" title="Permanent link">&para;</a></h3>
 <p>Scores tool signals to pick a tier per turn. See
 <a href="../../routing_algorithms/stage_router_routing/">Stage-Router Routing</a> for the
@@ -1748,7 +1919,7 @@ optional <code>handoff_notes</code> and <code>classifier</code> tables and for t
 <td><code>picker</code></td>
 <td style="text-align: center;">Yes</td>
 <td>—</td>
-<td><code>capable_first</code> or <code>efficient_first</code>. Tier used when the signals are not confident.</td>
+<td><code>efficient_first</code>, or <code>capable_first</code> (experimental, unbenchmarked). Tier used when the signals are not confident.</td>
 </tr>
 <tr>
 <td><code>confidence_threshold</code></td>
@@ -1774,8 +1945,113 @@ optional <code>handoff_notes</code> and <code>classifier</code> tables and for t
 <td>unset</td>
 <td>System prompt handed to the efficient tier.</td>
 </tr>
+<tr>
+<td><code>classifier.classify_trigger</code></td>
+<td style="text-align: center;">No</td>
+<td><code>every_request</code></td>
+<td>When the judge runs. See the <code>llm_classifier</code> route. <code>new_session</code> has no effect here.</td>
+</tr>
+<tr>
+<td><code>classifier.response_format_type</code></td>
+<td style="text-align: center;">No</td>
+<td><code>json_schema</code></td>
+<td>Structured-output mode for the optional classifier judge. Use <code>json_object</code> when the classifier provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally.</td>
+</tr>
+<tr>
+<td><code>subagents</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>Nested <code>passthrough</code> or custom <code>llm_classifier</code> policy used only for delegated sub-agent work. See <a href="../../routing_algorithms/subagent_routing/">Sub-Agent-Aware Routing</a>.</td>
+</tr>
 </tbody>
 </table>
+<h3 id="composite"><code>composite</code><a class="headerlink" href="#composite" title="Permanent link">&para;</a></h3>
+<p>Composes other algorithms, letting one set another's
+configuration. Today a classifier sets the tier a stage router falls open to when its own signals are not confident, leaving its scoring and escalation logic untouched. See
+<a href="../../routing_algorithms/composite_routing/">Composite Routing</a>.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th style="text-align: center;">Required</th>
+<th>Default</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>classifier.target</code></td>
+<td style="text-align: center;">Yes</td>
+<td>—</td>
+<td>Target the tier judge is called through. Not a routing destination.</td>
+</tr>
+<tr>
+<td><code>classifier.base_threshold</code></td>
+<td style="text-align: center;">Yes</td>
+<td>—</td>
+<td><code>p_solve</code> floor that still routes to the efficient tier. In <code>[0, 1]</code>.</td>
+</tr>
+<tr>
+<td><code>classifier.classify_trigger</code></td>
+<td style="text-align: center;">Yes</td>
+<td>—</td>
+<td><code>user_turn</code> re-picks the tier whenever the user speaks, <code>new_session</code> picks once and holds it. <code>every_request</code> is rejected here: a judge call per tool step is the cost this route exists to avoid.</td>
+</tr>
+<tr>
+<td><code>classifier.message_hash_fallback</code></td>
+<td style="text-align: center;">No</td>
+<td><code>false</code></td>
+<td>Retains the tier by hashing the first user message, for clients that send no session ID. Unlike the <code>llm_classifier</code> route, this works on either trigger. Conversations opening with the same text share a tier.</td>
+</tr>
+<tr>
+<td><code>stage.capable_target</code></td>
+<td style="text-align: center;">Yes</td>
+<td>—</td>
+<td>Capable tier.</td>
+</tr>
+<tr>
+<td><code>stage.efficient_target</code></td>
+<td style="text-align: center;">Yes</td>
+<td>—</td>
+<td>Efficient tier.</td>
+</tr>
+<tr>
+<td><code>stage.confidence_threshold</code></td>
+<td style="text-align: center;">Yes</td>
+<td>—</td>
+<td>Corroboration a decisive signal needs. In <code>[0, 1]</code>.</td>
+</tr>
+<tr>
+<td><code>stage.recent_turn_window</code></td>
+<td style="text-align: center;">No</td>
+<td><code>3</code></td>
+<td>Trailing tool results the signals are computed over.</td>
+</tr>
+<tr>
+<td><code>stage.capable_system_prompt</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>System prompt handed to the capable tier.</td>
+</tr>
+<tr>
+<td><code>stage.efficient_system_prompt</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>System prompt handed to the efficient tier.</td>
+</tr>
+<tr>
+<td><code>subagents</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>Nested policy used only for delegated sub-agent work.</td>
+</tr>
+</tbody>
+</table>
+<p>The tier is retained per session. A deployment that sends no session ID needs
+<code>classifier.message_hash_fallback = true</code>, which keys on the first user message
+instead. The stage table takes no <code>picker</code>: the classifier supplies that tier per turn. A turn the
+classifier cannot reach falls open to the efficient tier. Leaving out
+<code>classifier</code> is recommended: that judge runs ahead of the fall-open tier.</p>
 <h2 id="validation-errors">Validation Errors<a class="headerlink" href="#validation-errors" title="Permanent link">&para;</a></h2>
 <p><code>--dry-run</code> prefixes configuration failures with
 <code>invalid server config &lt;path&gt;:</code>. Within that wrapper, TOML deserialization

@@ -14,7 +14,7 @@
         <link rel="prev" href="../../architecture/">
       
       
-        <link rel="next" href="../random_routing/">
+        <link rel="next" href="../subagent_routing/">
       
       
         
@@ -705,6 +705,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../subagent_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sub-Agent-Aware Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../random_routing/" class="md-nav__link">
         
   
@@ -789,6 +817,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../composite_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Composite Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../escalation_router_routing/" class="md-nav__link">
         
   
@@ -797,6 +853,34 @@
     
   
     Escalation-Router Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../advisor_gate_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Advisor-Gate Routing
   
 
     
@@ -897,6 +981,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/soak_test/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Soak Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -970,7 +1082,7 @@
   <span class="md-ellipsis">
     
   
-    CLI Reference
+    Server CLI Reference
   
 
     
@@ -1168,6 +1280,11 @@ configuration and tuning. For the vocabulary these pages use, see
 </thead>
 <tbody>
 <tr>
+<td><a href="../subagent_routing/">Sub-Agent-Aware Routing</a></td>
+<td>Delegated sub-agents should use a separate routing policy from the parent agent.</td>
+<td><code>passthrough</code> or <code>stage_router</code> with <code>subagents</code></td>
+</tr>
+<tr>
 <td><a href="../random_routing/">Random Routing</a></td>
 <td>You need a fixed traffic split for A/B tests, baselines, or cost experiments.</td>
 <td><code>random</code></td>
@@ -1183,9 +1300,19 @@ configuration and tuning. For the vocabulary these pages use, see
 <td><code>stage_router</code></td>
 </tr>
 <tr>
+<td><a href="../composite_routing/">Composite Routing</a></td>
+<td>Routing algorithms are composed, one setting the configuration of another before handing off. Today an LLM classifier sets a stage router's default tier.</td>
+<td><code>composite</code></td>
+</tr>
+<tr>
 <td><a href="../escalation_router_routing/">Escalation-Router Routing</a></td>
 <td>Start every task on the weak tier and escalate to strong when an LLM judge detects trouble.</td>
 <td><code>llm_classifier</code> with <code>escalation</code></td>
+</tr>
+<tr>
+<td><a href="../advisor_gate_routing/">Advisor-Gate Routing</a></td>
+<td>One model should serve every turn, with a stronger reviewer approving its "done" claims or sending back a redo plan.</td>
+<td><code>advisor</code></td>
 </tr>
 </tbody>
 </table>

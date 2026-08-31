@@ -601,6 +601,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../subagent_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sub-Agent-Aware Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../random_routing/" class="md-nav__link">
         
   
@@ -780,10 +808,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#session-affinity" class="md-nav__link">
+  <a href="#when-the-judge-runs" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Session affinity
+        When the judge runs
       
     </span>
   </a>
@@ -845,6 +873,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../composite_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Composite Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../escalation_router_routing/" class="md-nav__link">
         
   
@@ -853,6 +909,34 @@
     
   
     Escalation-Router Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../advisor_gate_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Advisor-Gate Routing
   
 
     
@@ -953,6 +1037,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/soak_test/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Soak Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1026,7 +1138,7 @@
   <span class="md-ellipsis">
     
   
-    CLI Reference
+    Server CLI Reference
   
 
     
@@ -1221,10 +1333,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#session-affinity" class="md-nav__link">
+  <a href="#when-the-judge-runs" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Session affinity
+        When the judge runs
       
     </span>
   </a>
@@ -1297,7 +1409,7 @@ decision for later requests in the same conversation.</p>
 </span><span id="__span-0-26"><a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a><span class="n">weak_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span>
 </span><span id="__span-0-27"><a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a><span class="n">base_threshold</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.5</span>
 </span><span id="__span-0-28"><a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a><span class="n">threshold_step</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.1</span>
-</span><span id="__span-0-29"><a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a><span class="n">session_affinity</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
+</span><span id="__span-0-29"><a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a><span class="n">classify_trigger</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;new_session&quot;</span>
 </span><span id="__span-0-30"><a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a><span class="n">message_hash_fallback</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
 </span></code></pre></div>
 <p><code>message_hash_fallback</code> is best-effort: independent sessions with the same
@@ -1330,6 +1442,10 @@ Switchyard does not parse provider-specific reasoning fields such as
 <code>reasoning_content</code>. If <code>content</code> is empty or unparseable, the route falls back
 to <code>strong_target</code> even when the judge request returned HTTP 200. With session
 affinity, that fallback can be reused without another judge call.</p>
+<p>Capability and escalation routes use JSON Schema structured output by default.
+For a provider that supports JSON Object mode but not JSON Schema, set
+<code>response_format_type = "json_object"</code> on the route. Switchyard then adds the
+verdict schema to the judge prompt and validates the returned object locally.</p>
 <p>When a vLLM-compatible provider supports <code>enable_thinking</code>, configure it on the
 judge target through <code>extra_body</code>:</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">[targets.classifier]</span>
@@ -1340,7 +1456,7 @@ for reasoning models. Other model/provider pairs may work with reasoning enabled
 or use a different control. Verify the judge response shape before deployment.
 If reasoning remains enabled, set <code>max_output_tokens</code> high enough for both the
 reasoning and final JSON. A truncated verdict has the same fail-open result. See
-the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/fb3fc308ff130248bd5e534d657cebbcdda777d8/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
+the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/3ad68556e6a1a8ca7f9eb8b5ff2239dbb4ea4bee/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
 for the server merge behavior.</p>
 <h2 id="tuning-options">Tuning options<a class="headerlink" href="#tuning-options" title="Permanent link">&para;</a></h2>
 <table>
@@ -1368,19 +1484,24 @@ for the server merge behavior.</p>
 <td>When unset, the judge sees the opening user task and the latest user message when they differ. When set to <code>N</code>, it sees the opening user task and the last <code>N</code> conversation messages after that task. <code>0</code> keeps only the opening task. Client system and developer instructions are not shown to the judge.</td>
 </tr>
 <tr>
-<td><code>session_affinity</code></td>
-<td><code>false</code></td>
-<td>Retains the first selected target for a session and reuses it on later requests.</td>
+<td><code>classify_trigger</code></td>
+<td><code>every_request</code></td>
+<td>When the judge runs. <code>every_request</code> judges every request, tool continuations included. <code>user_turn</code> judges each new user message and holds that target across the tool calls between. <code>new_session</code> judges once and reuses that target for the session.</td>
 </tr>
 <tr>
 <td><code>message_hash_fallback</code></td>
 <td><code>false</code></td>
-<td>When session metadata is absent, keys affinity from the first user-message text. Requires <code>session_affinity = true</code>.</td>
+<td>When session metadata is absent, keys affinity from the first user-message text. Requires <code>classify_trigger = "new_session"</code>.</td>
 </tr>
 <tr>
 <td><code>prompt</code></td>
 <td>packaged capability prompt</td>
 <td>Replaces the classifier's system prompt. The packaged verdict schema and routing policy remain active.</td>
+</tr>
+<tr>
+<td><code>response_format_type</code></td>
+<td><code>json_schema</code></td>
+<td>Structured-output mode for capability and escalation judges. Use <code>json_object</code> for providers without JSON Schema support.</td>
 </tr>
 <tr>
 <td><code>max_output_tokens</code></td>
@@ -1391,8 +1512,8 @@ for the server merge behavior.</p>
 </table>
 <h3 id="override-the-classifier-prompt">Override the classifier prompt<a class="headerlink" href="#override-the-classifier-prompt" title="Permanent link">&para;</a></h3>
 <p>Set <code>prompt</code> on the route when the packaged capability rubric does not describe
-your weak model. Switchyard sends the response schema separately through the
-provider's structured-output request; do not copy it into the prompt.</p>
+your weak model. Do not copy the response schema into the prompt: Switchyard
+supplies it according to <code>response_format_type</code>.</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[routes.smart]</span>
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;smart&quot;</span>
 </span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;llm_classifier&quot;</span>
@@ -1464,28 +1585,39 @@ opening task and the latest user follow-up when they differ. Set
 If a client sends only a follow-up fragment without the opening task, enable
 affinity or include the task history. Threshold tuning changes routing policy;
 it cannot recover missing task context.</p>
-<h2 id="session-affinity">Session affinity<a class="headerlink" href="#session-affinity" title="Permanent link">&para;</a></h2>
-<p>With <code>session_affinity = true</code>, the first selected target is retained for the
-request's session identity. This includes <code>strong_target</code> when it was selected
-as the fallback for an unavailable or unusable judge verdict. There is no
-warmup period. Later requests with the same identity reuse the target before
-classification, so the judge call is skipped.</p>
-<p>Affinity is process-local. Clients can send <code>x-switchyard-session-id</code>, or enable
-<code>message_hash_fallback</code> to key requests without session metadata from the first
-user-message text.</p>
+<h2 id="when-the-judge-runs">When the judge runs<a class="headerlink" href="#when-the-judge-runs" title="Permanent link">&para;</a></h2>
+<p><code>classify_trigger</code> sets how often the target is re-decided.</p>
+<p><code>every_request</code>, the default, judges every request. In an agentic session that
+includes every tool continuation, so twenty tool steps means twenty-one
+classifications of one task, and the target can change between any two of them.</p>
+<p><code>user_turn</code> judges each new user message and holds that target through the tool
+calls that follow:</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">[routes.smart]</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">classify_trigger</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;user_turn&quot;</span>
+</span></code></pre></div>
+<p>Tool results are the agent continuing work the user already asked for, so they
+do not re-open the decision. A failed or unusable verdict keeps the current
+target. When no target has been selected yet, the next request is judged again.</p>
+<p><code>new_session</code> judges once and reuses that target for the rest of the session,
+including <code>strong_target</code> when it was selected as the fallback for an unusable
+verdict. There is no warmup period, and later requests skip the judge entirely.</p>
+<p>The selection is held in per-session state, so requests without a session
+identity are judged every time. Clients can send <code>x-switchyard-session-id</code>, or
+enable <code>message_hash_fallback</code> to key on the first user-message text under
+<code>new_session</code>.</p>
 <h2 id="run-the-route">Run the route<a class="headerlink" href="#run-the-route" title="Permanent link">&para;</a></h2>
 <p>After <a href="../../getting_started/#install-the-server">installing the Rust server</a>, export
 the provider credential, validate the configuration, and start the release
 binary:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OPENROUTER_API_KEY</span><span class="o">=</span><span class="s2">&quot;your-openrouter-key&quot;</span><span class="w">  </span><span class="c1"># pragma: allowlist secret</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span>--dry-run
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span>--host<span class="w"> </span><span class="m">127</span>.0.0.1<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">OPENROUTER_API_KEY</span><span class="o">=</span><span class="s2">&quot;your-openrouter-key&quot;</span><span class="w">  </span><span class="c1"># pragma: allowlist secret</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span>--dry-run
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">  </span>--host<span class="w"> </span><span class="m">127</span>.0.0.1<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
 </span></code></pre></div>
 <p>Send a request using the route ID:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>curl<span class="w"> </span>http://localhost:4000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: application/json&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;model&quot;:&quot;smart&quot;,&quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;Explain why the sky appears blue.&quot;}]}&#39;</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>curl<span class="w"> </span>http://localhost:4000/v1/chat/completions<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: application/json&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;model&quot;:&quot;smart&quot;,&quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;Explain why the sky appears blue.&quot;}]}&#39;</span>
 </span></code></pre></div>
 <p>Treat the selected target as model-dependent output, not a fixed test result.</p>
 

@@ -11,10 +11,10 @@
       
       
       
-        <link rel="prev" href="../stage_router_routing/">
+        <link rel="prev" href="../composite_routing/">
       
       
-        <link rel="next" href="../../operations/context_window/">
+        <link rel="next" href="../advisor_gate_routing/">
       
       
         
@@ -601,6 +601,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../subagent_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sub-Agent-Aware Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../random_routing/" class="md-nav__link">
         
   
@@ -665,6 +693,34 @@
     
   
     Stage-Router Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../composite_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Composite Routing
   
 
     
@@ -843,6 +899,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../advisor_gate_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Advisor-Gate Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -930,6 +1014,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/soak_test/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Soak Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1003,7 +1115,7 @@
   <span class="md-ellipsis">
     
   
-    CLI Reference
+    Server CLI Reference
   
 
     
@@ -1259,8 +1371,9 @@ going well.</p>
 clients send; the judge is not exposed as a client-selectable model.</p>
 <p>The route-level <code>prompt</code> key replaces the packaged trajectory-judge prompt. It
 uses the escalation verdict schema rather than the capability verdict schema.
-Switchyard sends that schema separately through the provider's structured-output
-request rather than copying it into the prompt.</p>
+Switchyard supplies that schema according to the route's <code>response_format_type</code>:
+through the structured-output request in the default <code>json_schema</code> mode, or in
+the prompt in <code>json_object</code> mode.</p>
 <h2 id="how-the-decision-works">How the decision works<a class="headerlink" href="#how-the-decision-works" title="Permanent link">&para;</a></h2>
 <p>For each turn on an unlatched session, Switchyard:</p>
 <ol>

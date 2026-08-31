@@ -597,6 +597,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../routing_algorithms/subagent_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sub-Agent-Aware Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../routing_algorithms/random_routing/" class="md-nav__link">
         
   
@@ -681,6 +709,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../routing_algorithms/composite_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Composite Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../routing_algorithms/escalation_router_routing/" class="md-nav__link">
         
   
@@ -689,6 +745,34 @@
     
   
     Escalation-Router Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../routing_algorithms/advisor_gate_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Advisor-Gate Routing
   
 
     
@@ -789,6 +873,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/soak_test/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Soak Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -864,7 +976,7 @@
   <span class="md-ellipsis">
     
   
-    CLI Reference
+    Server CLI Reference
   
 
     
@@ -1140,8 +1252,8 @@ clients, decisions, metadata, and wire-format identifiers.</p>
 <h2 id="crate-boundary">Crate boundary<a class="headerlink" href="#crate-boundary" title="Permanent link">&para;</a></h2>
 <p>Applications embedding libsy normally depend on both crates:</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">[dependencies]</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">switchyard-libsy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">git</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;https://github.com/NVIDIA-NeMo/Switchyard.git&quot;</span><span class="w"> </span><span class="p">}</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">switchyard-protocol</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">git</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;https://github.com/NVIDIA-NeMo/Switchyard.git&quot;</span><span class="w"> </span><span class="p">}</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">switchyard-libsy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">git</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;https://github.com/NVIDIA-NeMo/Switchyard.git&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">tag</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;v0.2.0&quot;</span><span class="w"> </span><span class="p">}</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">switchyard-protocol</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">git</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;https://github.com/NVIDIA-NeMo/Switchyard.git&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">tag</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;v0.2.0&quot;</span><span class="w"> </span><span class="p">}</span>
 </span></code></pre></div>
 <p>Import algorithms and orchestration types from <code>switchyard_libsy</code>. Import
 requests, responses, metadata, decisions, and LLM client traits from
